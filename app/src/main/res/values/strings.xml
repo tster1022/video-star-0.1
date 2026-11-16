@@ -1,0 +1,83 @@
+<resources>
+    <string name="app_name">StarStudio</string>
+
+    <!-- Brand & English Fixed Spec Labels -->
+    <string name="brand_video">STAR</string>
+    <string name="brand_st">STUDI</string>
+    <string name="brand_r">O</string>
+
+    <string name="share_youtube">Send to YouTube</string>
+    <string name="share_facebook">Send to Facebook</string>
+    <string name="share_instagram">Send to Instagram</string>
+    <string name="share_email">Send in Email</string>
+    <string name="share_camera_roll">Send to Camera Roll</string>
+
+    <string name="tab_edit">تحرير</string>
+    <string name="tab_select">اختر</string>
+    <string name="tab_new">جديد</string>
+    <string name="action_add">إضافة</string>
+    <string name="action_audio">صوت</string>
+
+    <string name="new_record_video">Record Video</string>
+    <string name="new_import_video">Import Video</string>
+    <string name="new_import_photo">Import Photo</string>
+    <string name="new_modify_clip">Modify Clip</string>
+    <string name="new_reeffect_clip">Re-Effect Clip</string>
+    <string name="new_transform_clip">Transform Clip</string>
+    <string name="new_mix_clips">Mix Clips</string>
+    <string name="new_multi_layer_clip">Multi-Layer Clip</string>
+
+    <string name="ml_cancel">إلغاء</string>
+    <string name="ml_create">إنشاء</string>
+    <string name="ml_3d">3D</string>
+    <string name="ml_hint_drag">اسحب بإصبع واحد للتحريك وإصبعين للتكبير والتدوير، اضغط مرتين للإعادة</string>
+    <string name="ml_tab_layer_effects">تأثيرات\nالطبقة</string>
+    <string name="ml_tab_layout">التخطيط</string>
+    <string name="ml_tab_color">اللون</string>
+    <string name="ml_tab_mask">القناع</string>
+
+    <!-- Arabic Secondary UI & Dialogs -->
+    <string name="cd_favorites">المفضلة</string>
+    <string name="cd_quick_actions">إجراءات سريعة</string>
+    <string name="cd_audio_library">المكتبة الصوتية</string>
+    <string name="cd_new_project">إنشاء مشروع جديد</string>
+    <string name="cd_settings">الإعدادات</string>
+    <string name="cd_delete_project">حذف المشروع</string>
+    <string name="cd_edit_project">تعديل المشروع</string>
+    <string name="cd_share_project">مشاركة المشروع</string>
+    <string name="cd_help">المساعدة والدروس</string>
+    <string name="cd_close_workspace">إغلاق مساحة العمل</string>
+    <string name="cd_capture_snapshot">التقاط لقطة شاشة</string>
+    <string name="cd_step_backward">إطار للخلف</string>
+    <string name="cd_step_forward">إطار للأمام</string>
+    <string name="cd_info">معلومات</string>
+    <string name="cd_qr_import">استيراد كود QR</string>
+    <string name="cd_color_wheel">اختيار لون الخلفية</string>
+    <string name="cd_layer_layout_toggle">تبديل تخطيط الطبقات</string>
+    <string name="cd_manage_layers">إدارة وإضافة الطبقات</string>
+    <string name="cd_play_pause">تشغيل أو إيقاف</string>
+    <string name="cd_mute_toggle">كتم أو تشغيل الصوت</string>
+
+    <string name="empty_projects_title">لا توجد مشاريع بعد</string>
+    <string name="empty_projects_subtitle">اضغط على علامة + في الأعلى لإنشاء مشروعك الأول</string>
+    <string name="open_project_cta">فتح في مساحة العمل</string>
+
+    <string name="dialog_new_project_title">مشروع جديد</string>
+    <string name="dialog_edit_project_title">تعديل المشروع</string>
+    <string name="label_project_name">اسم المشروع</string>
+    <string name="label_aspect_ratio">نسبة العرض</string>
+    <string name="btn_save">حفظ</string>
+    <string name="btn_create_ar">إنشاء</string>
+    <string name="btn_cancel_ar">إلغاء</string>
+    <string name="btn_delete_confirm">حذف</string>
+    <string name="btn_close">إغلاق</string>
+
+    <string name="dialog_delete_title">تأكيد الحذف</string>
+    <string name="dialog_delete_message">هل تريد حذف المشروع «%1$s» نهائياً من الجلسة الحالية؟</string>
+
+    <string name="msg_snapshot_saved">تم التقاط لقطة شاشة للمعاينة بنجاح</string>
+    <string name="msg_export_success">تم تجهيز الفيديو للتصدير إلى %1$s</string>
+    <string name="msg_multilayer_saved">تم حفظ تكوين الطبقات المتعددة في المشروع</string>
+    <string name="msg_favorites_filtered_on">عرض المشاريع المفضلة فقط</string>
+    <string name="msg_favorites_filtered_off">عرض جميع المشاريع</string>
+</resources>

@@ -1,0 +1,6 @@
+{
+  "name": "StarStudio",
+  "description": "استوديو النجم (StarStudio) — تطبيق مونتاج الفيديو الإبداعي بواجهة عربية احترافية ومحرّر طبقات متعددة وتأثيرات GPU.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
