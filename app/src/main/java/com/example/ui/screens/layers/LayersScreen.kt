@@ -112,8 +112,11 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import android.os.Build
+import androidx.compose.ui.platform.LocalInspectionMode
 import com.example.R
 import com.example.data.MediaImportHelper
+import com.example.gl.GlLayerRenderStage
 import com.example.model.ClassicLayerTab
 import com.example.model.EditorLayer
 import com.example.model.LayerEffectType
@@ -122,6 +125,7 @@ import com.example.model.MaskMode
 import com.example.model.MaskShape
 import com.example.model.MediaClip
 import com.example.model.TextLayerSpec
+import com.example.ui.components.IosThinSlider
 import com.example.ui.components.MediaClipStageContent
 import com.example.ui.components.RichLayerTextOverlay
 import com.example.ui.components.applyLayerMask
@@ -256,12 +260,18 @@ fun LayersScreen(
                 activeTab = uiState.activeBottomTab,
                 hasSelectedLayer = uiState.selectedLayerIndex != null,
                 onTabSelected = { tab ->
-                    if (tab == ClassicLayerTab.LAYOUT) {
-                        viewModel.syncToRepository()
-                        val layerId = viewModel.ensureActiveLayerId()
-                        onOpenKeyframeEditor(projectId, layerId)
-                    } else {
-                        viewModel.onBottomTabClick(tab)
+                    when (tab) {
+                        ClassicLayerTab.LAYER_EFFECTS -> {
+                            viewModel.syncToRepository()
+                            val layerId = viewModel.ensureActiveLayerId()
+                            onOpenLayerEffectsStudio(projectId, layerId)
+                        }
+                        ClassicLayerTab.LAYOUT -> {
+                            viewModel.syncToRepository()
+                            val layerId = viewModel.ensureActiveLayerId()
+                            onOpenKeyframeEditor(projectId, layerId)
+                        }
+                        else -> viewModel.onBottomTabClick(tab)
                     }
                 }
             )
@@ -645,6 +655,8 @@ private fun ClassicStagePreviewArea(
                 .testTag("classic_layers_stage")
         ) {
             val activeVideoCount = layers.count { it.mediaClip is MediaClip.Video }
+            val isHardwareGlSupported = !LocalInspectionMode.current &&
+                !Build.FINGERPRINT.contains("robolectric", ignoreCase = true)
 
             layers.forEachIndexed { index, rawLayer ->
                 val layer = if (isPlaying || rawLayer.keyframes.isNotEmpty()) {
@@ -653,6 +665,10 @@ private fun ClassicStagePreviewArea(
                 val isSelected = selectedLayerIndex == index
                 val clip = layer.mediaClip
                 val layerColor = layer.backgroundColorArgb?.let { Color(it.toInt()) }
+                val activeLayerPasses = layer.effectPasses.filter { it.isEnabled && it.effectId != "none" }
+                val useLayerGl = activeLayerPasses.isNotEmpty() &&
+                    isHardwareGlSupported &&
+                    (clip != null || layerColor != null)
 
                 if (clip != null || layerColor != null || layer.effectiveText.isNotBlank()) {
                     Box(
@@ -681,38 +697,48 @@ private fun ClassicStagePreviewArea(
                                 } else Modifier
                             )
                     ) {
-                        if (clip != null) {
-                            MediaClipStageContent(
-                                clip = clip,
+                        if (useLayerGl) {
+                            GlLayerRenderStage(
+                                layer = layer,
+                                progress = stageProgress,
                                 isPlaying = isPlaying,
-                                positionMs = (stageProgress * clip.effectiveDurationMs).toLong(),
                                 isMuted = isMuted,
-                                isFitMode = clip.isFitMode,
-                                useLiveVideoPlayer = clip is MediaClip.Video && (isSelected || activeVideoCount <= 2),
-                                contentDescription = "الطبقة ${layer.number}",
-                                colorFilter = if (layer.tintColor != Color.Transparent) {
-                                    ColorFilter.tint(layer.tintColor.copy(alpha = 0.42f), BlendMode.SrcAtop)
-                                } else null,
                                 modifier = Modifier.fillMaxSize()
                             )
-                        } else if (layerColor != null) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(layerColor)
-                            )
-                        }
-
-                        if ((clip != null || layerColor != null) && layer.effect != LayerEffectType.NONE) {
-                            val tintOverlay = when (layer.effect) {
-                                LayerEffectType.NEON_GLOW -> ClassicRed.copy(alpha = 0.18f)
-                                LayerEffectType.RGB_SPLIT -> Color.Cyan.copy(alpha = 0.16f)
-                                LayerEffectType.DREAM_BLUR -> ClassicGreen.copy(alpha = 0.16f)
-                                LayerEffectType.VINTAGE_PULSE -> Color(0xFFFFB74D).copy(alpha = 0.18f)
-                                LayerEffectType.NONE -> Color.Transparent
+                        } else {
+                            if (clip != null) {
+                                MediaClipStageContent(
+                                    clip = clip,
+                                    isPlaying = isPlaying,
+                                    positionMs = (stageProgress * clip.effectiveDurationMs).toLong(),
+                                    isMuted = isMuted,
+                                    isFitMode = clip.isFitMode,
+                                    useLiveVideoPlayer = clip is MediaClip.Video && (isSelected || activeVideoCount <= 2),
+                                    contentDescription = "الطبقة ${layer.number}",
+                                    colorFilter = if (layer.tintColor != Color.Transparent) {
+                                        ColorFilter.tint(layer.tintColor.copy(alpha = 0.42f), BlendMode.SrcAtop)
+                                    } else null,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else if (layerColor != null) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(layerColor)
+                                )
                             }
-                            Box(modifier = Modifier.fillMaxSize().background(tintOverlay))
+
+                            if ((clip != null || layerColor != null) && layer.effect != LayerEffectType.NONE) {
+                                val tintOverlay = when (layer.effect) {
+                                    LayerEffectType.NEON_GLOW -> ClassicRed.copy(alpha = 0.18f)
+                                    LayerEffectType.RGB_SPLIT -> Color.Cyan.copy(alpha = 0.16f)
+                                    LayerEffectType.DREAM_BLUR -> ClassicGreen.copy(alpha = 0.16f)
+                                    LayerEffectType.VINTAGE_PULSE -> Color(0xFFFFB74D).copy(alpha = 0.18f)
+                                    LayerEffectType.NONE -> Color.Transparent
+                                }
+                                Box(modifier = Modifier.fillMaxSize().background(tintOverlay))
+                            }
                         }
 
                         if (layer.effectiveText.isNotBlank()) {
@@ -787,55 +813,64 @@ private fun ClassicStagePreviewArea(
                     .padding(bottom = 48.dp)
             )
 
-            // Semi-transparent #CCD1D1D6 player bar overlaid at the bottom of preview
+            // Sleek semi-hidden translucent Video Star player bar overlaid gently at bottom of preview
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-                Row(
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color.Black.copy(alpha = 0.28f),
+                    border = BorderStroke(0.6.dp, Color.White.copy(alpha = 0.16f)),
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .background(ClassicPlayerOverlay)
-                        .padding(horizontal = 6.dp, vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
                 ) {
-                    IconButton(
-                        onClick = onTogglePlay,
+                    Row(
                         modifier = Modifier
-                            .size(38.dp)
-                            .testTag("classic_layers_play_button")
+                            .fillMaxWidth()
+                            .height(34.dp)
+                            .padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                            contentDescription = stringResource(R.string.cd_play_pause),
-                            tint = ClassicGreen,
-                            modifier = Modifier.size(22.dp)
-                        )
-                    }
+                        IconButton(
+                            onClick = onTogglePlay,
+                            modifier = Modifier
+                                .size(34.dp)
+                                .testTag("classic_layers_play_button")
+                        ) {
+                            Icon(
+                                imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                contentDescription = stringResource(R.string.cd_play_pause),
+                                tint = VideoStarWhite,
+                                modifier = Modifier.size(19.dp)
+                            )
+                        }
 
-                    Slider(
-                        value = stageProgress,
-                        onValueChange = onScrub,
-                        colors = SliderDefaults.colors(
+                        IosThinSlider(
+                            value = stageProgress,
+                            onValueChange = onScrub,
+                            activeTrackColor = VideoStarWhite.copy(alpha = 0.92f),
+                            inactiveTrackColor = Color.White.copy(alpha = 0.24f),
                             thumbColor = VideoStarWhite,
-                            activeTrackColor = ClassicGreen,
-                            inactiveTrackColor = VideoStarWhite.copy(alpha = 0.55f)
-                        ),
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(26.dp)
-                    )
-
-                    IconButton(
-                        onClick = onToggleMute,
-                        modifier = Modifier
-                            .size(38.dp)
-                            .testTag("classic_layers_mute_button")
-                    ) {
-                        Icon(
-                            imageVector = if (isMuted) Icons.AutoMirrored.Rounded.VolumeOff else Icons.AutoMirrored.Rounded.VolumeUp,
-                            contentDescription = stringResource(R.string.cd_mute_toggle),
-                            tint = VideoStarInkDark,
-                            modifier = Modifier.size(19.dp)
+                            thumbSize = 11.dp,
+                            trackHeight = 2.dp,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(34.dp)
                         )
+
+                        IconButton(
+                            onClick = onToggleMute,
+                            modifier = Modifier
+                                .size(34.dp)
+                                .testTag("classic_layers_mute_button")
+                        ) {
+                            Icon(
+                                imageVector = if (isMuted) Icons.AutoMirrored.Rounded.VolumeOff else Icons.AutoMirrored.Rounded.VolumeUp,
+                                contentDescription = stringResource(R.string.cd_mute_toggle),
+                                tint = VideoStarWhite.copy(alpha = 0.85f),
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
                     }
                 }
             }

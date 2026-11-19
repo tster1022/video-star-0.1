@@ -72,7 +72,10 @@ fun IosThinSlider(
     valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
     enabled: Boolean = true,
     activeTrackColor: Color = ClassicGreen,
-    inactiveTrackColor: Color = Color(0xFFD1D1D6)
+    inactiveTrackColor: Color = Color(0xFFD1D1D6),
+    thumbColor: Color = VideoStarWhite,
+    thumbSize: androidx.compose.ui.unit.Dp = 14.dp,
+    trackHeight: androidx.compose.ui.unit.Dp = 2.dp
 ) {
     val span = (valueRange.endInclusive - valueRange.start).takeIf { it > 0.00001f } ?: 1f
     val fraction = ((value - valueRange.start) / span).coerceIn(0f, 1f)
@@ -86,7 +89,6 @@ fun IosThinSlider(
             .height(48.dp),
         contentAlignment = Alignment.CenterStart
     ) {
-        val thumbSize = 20.dp
         val thumbPx = with(density) { thumbSize.toPx() }
         val totalPx = with(density) { maxWidth.toPx() }.coerceAtLeast(thumbPx + 1f)
         val usablePx = (totalPx - thumbPx).coerceAtLeast(1f)
@@ -114,33 +116,33 @@ fun IosThinSlider(
                 },
             contentAlignment = Alignment.CenterStart
         ) {
-            // Inactive background track (2.5.dp)
+            // Inactive background track (hairline)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(2.5.dp)
+                    .height(trackHeight)
                     .clip(CircleShape)
                     .background(if (enabled) inactiveTrackColor else Color(0xFFE5E5EA))
             )
 
-            // Active filled track (2.5.dp)
+            // Active filled track (hairline)
             Box(
                 modifier = Modifier
                     .fillMaxWidth(fraction.coerceAtLeast(0.001f))
-                    .height(2.5.dp)
+                    .height(trackHeight)
                     .clip(CircleShape)
                     .background(if (enabled) activeTrackColor else VideoStarInkMuted.copy(alpha = 0.4f))
             )
 
-            // 20.dp Pure White Circular Thumb with soft shadow
+            // Sleek circular micro thumb with subtle rim & shadow
             Box(
                 modifier = Modifier
                     .offset { IntOffset(thumbX, 0) }
                     .size(thumbSize)
-                    .shadow(elevation = 4.dp, shape = CircleShape)
+                    .shadow(elevation = 3.dp, shape = CircleShape)
                     .clip(CircleShape)
-                    .background(if (enabled) VideoStarWhite else Color(0xFFF2F2F7))
-                    .border(0.5.dp, Color(0xFFD0D0D8), CircleShape)
+                    .background(if (enabled) thumbColor else Color(0xFFF2F2F7))
+                    .border(0.6.dp, Color.Black.copy(alpha = 0.16f), CircleShape)
             )
         }
     }

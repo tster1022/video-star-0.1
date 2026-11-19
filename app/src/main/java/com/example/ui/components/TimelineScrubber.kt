@@ -55,19 +55,15 @@ import com.example.ui.theme.VideoStarWhite
 import java.util.Locale
 import kotlin.math.roundToInt
 
-private val StepperBoxGray = Color(0xFFA0A0A5)
-private val TimestampBoxGray = Color(0xFF9E9EA4)
-private val ScrubberTrackGray = Color(0xFFD0D0D4)
+private val FrostedHudBg = Color(0xFF101015).copy(alpha = 0.28f)
+private val FrostedHudBorder = Color.White.copy(alpha = 0.16f)
+private val FrostedTrackInactive = Color.White.copy(alpha = 0.22f)
+private val FrostedTrackActive = Color.White.copy(alpha = 0.88f)
 
 /**
- * Video Star Screen 2 Timeline Controls:
- * 1. Frame Stepper Row above timeline:
- *    - Left gray rounded square with white '<' (step backward 1 frame)
- *    - Right gray rounded square with white '>' (step forward 1 frame)
- * 2. Scrubber Bar Row:
- *    - Left gray box displaying current timestamp (e.g., "0.00") in white tabular numerals
- *    - Center gray track with a white circular thumb handle
- *    - Right gray box displaying total scene duration (e.g., "10.02") in white tabular numerals
+ * Sleek Video Star Pro semi-hidden ("شبه مخفي") floating timeline scrubber:
+ * 1. Minimal translucent frosted frame steppers (< / >) & snapshot rounded-square action
+ * 2. Translucent hairline scrubber strip: elapsed · 2.dp hairline track + 12.dp thumb · duration
  */
 @Composable
 fun TimelineScrubber(
@@ -89,9 +85,9 @@ fun TimelineScrubber(
             modifier = modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
-            // Frame Stepper Row above timeline (with circular gray PNG camera snapshot button directly above '>')
+            // Minimal semi-hidden frame steppers + snapshot button floating quietly above bar
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -99,9 +95,10 @@ fun TimelineScrubber(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(width = 44.dp, height = 34.dp)
+                        .size(width = 36.dp, height = 28.dp)
                         .clip(RoundedCornerShape(8.dp))
-                        .background(StepperBoxGray)
+                        .background(FrostedHudBg)
+                        .border(0.6.dp, FrostedHudBorder, RoundedCornerShape(8.dp))
                         .clickable(onClick = onStepBackward)
                         .testTag("timeline_step_backward"),
                     contentAlignment = Alignment.Center
@@ -109,23 +106,24 @@ fun TimelineScrubber(
                     Icon(
                         imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowLeft,
                         contentDescription = stringResource(R.string.cd_step_backward),
-                        tint = VideoStarWhite,
-                        modifier = Modifier.size(24.dp)
+                        tint = VideoStarWhite.copy(alpha = 0.90f),
+                        modifier = Modifier.size(19.dp)
                     )
                 }
 
                 Spacer(modifier = Modifier.weight(1f))
 
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (onSnapshotClick != null) {
                         Box(
                             modifier = Modifier
-                                .size(38.dp)
-                                .clip(CircleShape)
-                                .background(StepperBoxGray)
+                                .size(30.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(FrostedHudBg)
+                                .border(0.6.dp, FrostedHudBorder, RoundedCornerShape(8.dp))
                                 .clickable(onClick = onSnapshotClick)
                                 .testTag("workspace_camera_snapshot_button"),
                             contentAlignment = Alignment.Center
@@ -133,17 +131,18 @@ fun TimelineScrubber(
                             Icon(
                                 imageVector = Icons.Outlined.CameraAlt,
                                 contentDescription = stringResource(R.string.cd_capture_snapshot),
-                                tint = VideoStarWhite,
-                                modifier = Modifier.size(20.dp)
+                                tint = VideoStarWhite.copy(alpha = 0.90f),
+                                modifier = Modifier.size(16.dp)
                             )
                         }
                     }
 
                     Box(
                         modifier = Modifier
-                            .size(width = 44.dp, height = 34.dp)
+                            .size(width = 36.dp, height = 28.dp)
                             .clip(RoundedCornerShape(8.dp))
-                            .background(StepperBoxGray)
+                            .background(FrostedHudBg)
+                            .border(0.6.dp, FrostedHudBorder, RoundedCornerShape(8.dp))
                             .clickable(onClick = onStepForward)
                             .testTag("timeline_step_forward"),
                         contentAlignment = Alignment.Center
@@ -151,49 +150,46 @@ fun TimelineScrubber(
                         Icon(
                             imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
                             contentDescription = stringResource(R.string.cd_step_forward),
-                            tint = VideoStarWhite,
-                            modifier = Modifier.size(24.dp)
+                            tint = VideoStarWhite.copy(alpha = 0.90f),
+                            modifier = Modifier.size(19.dp)
                         )
                     }
                 }
             }
 
-            // Scrubber Bar: [0.00] ────●──── [10.02]
+            // Sleek semi-hidden translucent scrubber pill: 0.00 ──●── 10.02
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(34.dp)
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(FrostedHudBg)
+                    .border(0.6.dp, FrostedHudBorder, RoundedCornerShape(11.dp))
+                    .padding(horizontal = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Left gray box: current timestamp in white tabular numerals
-                Box(
+                Text(
+                    text = formatTimeDecimal(currentPositionMs),
+                    style = TextStyle(
+                        fontFamily = InterFontFamily,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 11.sp,
+                        fontFeatureSettings = "tnum",
+                        color = VideoStarWhite.copy(alpha = 0.92f)
+                    ),
+                    textAlign = TextAlign.Start,
+                    maxLines = 1,
                     modifier = Modifier
-                        .widthIn(min = 52.dp)
-                        .height(28.dp)
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(TimestampBoxGray)
-                        .padding(horizontal = 8.dp)
-                        .testTag("timeline_elapsed_text"),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = formatTimeDecimal(currentPositionMs),
-                        style = TextStyle(
-                            fontFamily = InterFontFamily,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 12.sp,
-                            fontFeatureSettings = "tnum",
-                            color = VideoStarWhite
-                        ),
-                        textAlign = TextAlign.Center,
-                        maxLines = 1
-                    )
-                }
+                        .widthIn(min = 38.dp)
+                        .testTag("timeline_elapsed_text")
+                )
 
-                // Center gray track with white circular thumb handle
+                // Hairline scrubber track with full-height touch area & compact 12.dp thumb
                 BoxWithConstraints(
                     modifier = Modifier
                         .weight(1f)
-                        .height(44.dp)
+                        .height(34.dp)
                         .pointerInput(safeDuration) {
                             detectTapGestures { offset ->
                                 val tapped = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
@@ -211,19 +207,28 @@ fun TimelineScrubber(
                     contentAlignment = Alignment.CenterStart
                 ) {
                     val density = LocalDensity.current
-                    val thumbSize = 24.dp
+                    val thumbSize = 12.dp
                     val thumbPx = with(density) { thumbSize.toPx() }
                     val trackWidthPx = with(density) { maxWidth.toPx() }
                     val usableWidthPx = (trackWidthPx - thumbPx).coerceAtLeast(1f)
                     val thumbOffsetX = (progress * usableWidthPx).roundToInt()
 
-                    // Base gray track
+                    // Hairline inactive track
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(5.dp)
-                            .clip(RoundedCornerShape(3.dp))
-                            .background(ScrubberTrackGray)
+                            .height(2.dp)
+                            .clip(RoundedCornerShape(1.dp))
+                            .background(FrostedTrackInactive)
+                    )
+
+                    // Active hairline progress fill
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(fraction = progress.coerceIn(0.01f, 1f))
+                            .height(2.dp)
+                            .clip(RoundedCornerShape(1.dp))
+                            .background(FrostedTrackActive)
                     )
 
                     // Subtle scene boundary divider ticks
@@ -233,51 +238,42 @@ fun TimelineScrubber(
                         Box(
                             modifier = Modifier
                                 .offset { IntOffset(tickOffsetX, 0) }
-                                .width(1.5.dp)
-                                .height(12.dp)
-                                .background(VideoStarInkMuted.copy(alpha = 0.65f))
+                                .width(1.dp)
+                                .height(7.dp)
+                                .background(VideoStarInkMuted.copy(alpha = 0.7f))
                         )
                     }
 
-                    // White circular thumb handle
+                    // Minimal crisp white circular thumb
                     Box(
                         modifier = Modifier
                             .offset { IntOffset(thumbOffsetX, 0) }
                             .size(thumbSize)
-                            .shadow(3.dp, CircleShape)
+                            .shadow(2.dp, CircleShape)
                             .clip(CircleShape)
                             .background(VideoStarWhite)
-                            .border(0.8.dp, Color.Black.copy(alpha = 0.14f), CircleShape)
+                            .border(0.5.dp, Color.Black.copy(alpha = 0.18f), CircleShape)
                             .onGloballyPositioned { coords ->
                                 onThumbBoundsChanged?.invoke(coords.boundsInWindow())
                             }
                     )
                 }
 
-                // Right gray box: total scene duration in white tabular numerals
-                Box(
+                Text(
+                    text = formatTimeDecimal(safeDuration),
+                    style = TextStyle(
+                        fontFamily = InterFontFamily,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 11.sp,
+                        fontFeatureSettings = "tnum",
+                        color = VideoStarWhite.copy(alpha = 0.68f)
+                    ),
+                    textAlign = TextAlign.End,
+                    maxLines = 1,
                     modifier = Modifier
-                        .widthIn(min = 52.dp)
-                        .height(28.dp)
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(TimestampBoxGray)
-                        .padding(horizontal = 8.dp)
-                        .testTag("timeline_remaining_text"),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = formatTimeDecimal(safeDuration),
-                        style = TextStyle(
-                            fontFamily = InterFontFamily,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 12.sp,
-                            fontFeatureSettings = "tnum",
-                            color = VideoStarWhite
-                        ),
-                        textAlign = TextAlign.Center,
-                        maxLines = 1
-                    )
-                }
+                        .widthIn(min = 38.dp)
+                        .testTag("timeline_remaining_text")
+                )
             }
         }
     }

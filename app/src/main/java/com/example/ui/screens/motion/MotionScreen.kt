@@ -212,20 +212,22 @@ fun MotionScreen(
                         }
 
                         Surface(
-                            shape = CircleShape,
-                            color = ClassicPlayerOverlay,
+                            shape = RoundedCornerShape(9.dp),
+                            color = Color(0xFF101015).copy(alpha = 0.30f),
+                            border = BorderStroke(0.6.dp, Color.White.copy(alpha = 0.16f)),
                             modifier = Modifier
                                 .align(Alignment.BottomStart)
                                 .padding(8.dp)
                         ) {
                             IconButton(
                                 onClick = viewModel::togglePlayback,
-                                modifier = Modifier.size(40.dp).testTag("motion_play_pause")
+                                modifier = Modifier.size(36.dp).testTag("motion_play_pause")
                             ) {
                                 Icon(
                                     imageVector = if (uiState.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                                     contentDescription = "Play or Pause",
-                                    tint = VideoStarWhite
+                                    tint = VideoStarWhite,
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
                         }

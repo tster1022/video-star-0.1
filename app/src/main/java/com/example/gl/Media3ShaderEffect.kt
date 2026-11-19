@@ -35,9 +35,12 @@ class ShaderPassGlEffect(
     }
 
     override fun isNoOp(inputWidth: Int, inputHeight: Int): Boolean {
-        if (pass.effectId == "none") return true
-        val maxIntensity = if (pass.keyframes.isEmpty()) pass.intensity else pass.keyframes.maxOf { it.intensity }
-        return maxIntensity <= 0.005f
+        if (!pass.isEnabled || pass.effectId == "none") return true
+        val intensityKfs = pass.keyframesForProperty(com.example.model.PARAM_KEY_INTENSITY)
+        val maxIntensity = if (intensityKfs.isEmpty()) pass.intensity else intensityKfs.maxOf { it.value }
+        val opacityKfs = pass.paramKeyframes[com.example.model.PARAM_KEY_OPACITY].orEmpty()
+        val maxOpacity = if (opacityKfs.isEmpty()) pass.passOpacity else opacityKfs.maxOf { it.value }
+        return (maxIntensity * maxOpacity) <= 0.005f
     }
 }
 
@@ -51,7 +54,6 @@ private class ShaderPassGlShaderProgram(
     private var width = 0
     private var height = 0
     private val identityMatrix = FloatArray(16).apply { Matrix.setIdentityM(this, 0) }
-    private val uniformParams = ShaderLibrary.extractUniformParams(pass)
 
     private val glProgram: GlProgram by lazy {
         try {
@@ -84,8 +86,10 @@ private class ShaderPassGlShaderProgram(
     override fun drawFrame(inputTexId: Int, presentationTimeUs: Long) {
         try {
             val localProgress = (presentationTimeUs.toFloat() / sceneDurationUs.toFloat()).coerceIn(0f, 1f)
-            val intensity = pass.evaluateIntensityAt(localProgress)
+            val opacity = pass.evaluateOpacityAt(localProgress)
+            val intensity = (pass.evaluateIntensityAt(localProgress) * opacity).coerceIn(0f, 1f)
             val timeSec = presentationTimeUs / 1_000_000f
+            val uniformParams = ShaderLibrary.extractUniformParams(pass, localProgress)
 
             glProgram.use()
             glProgram.setSamplerTexIdUniform("uTexture", inputTexId, 0)
@@ -97,6 +101,7 @@ private class ShaderPassGlShaderProgram(
             glProgram.setFloatUniform("uParam2", uniformParams[1])
             glProgram.setFloatUniform("uParam3", uniformParams[2])
             glProgram.setFloatsUniform("uTintColor", floatArrayOf(1f, 0.16f, 0.52f, 1f))
+            glProgram.setIntUniform("uBlendMode", pass.blendMode.glIndex)
             glProgram.bindAttributesAndUniforms()
 
             GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)

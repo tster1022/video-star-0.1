@@ -147,12 +147,25 @@ enum class EffectCategory(val label: String, val shortLabel: String) {
     RETRO_VHS("Retro & VHS", "Retro")
 }
 
-enum class EffectStudioTab(val label: String) {
-    ALL("All"),
-    COLOR("Color"),
-    LAYOUT("Layout"),
-    MOTION("Motion"),
-    VHS_GLITCH("VHS & Glitch")
+enum class EffectStudioTab(val label: String, val arabicLabel: String = label) {
+    ALL("All", "الكل"),
+    COLOR("Color", "ألوان وتوهج"),
+    LAYOUT("Layout", "تخطيط ومرآة"),
+    MOTION("Motion", "حركة وضبابية"),
+    VHS_GLITCH("VHS & Glitch", "VHS وتشويش")
+}
+
+@Serializable
+enum class EffectBlendMode(
+    val id: String,
+    val arabicLabel: String,
+    val glIndex: Int
+) {
+    NORMAL("normal", "عادي", 0),
+    ADD("add", "إضافة", 1),
+    MULTIPLY("multiply", "ضرب", 2),
+    SCREEN("screen", "شاشة", 3),
+    OVERLAY("overlay", "تراكب", 4)
 }
 
 fun EffectCatalogItem.toStudioTab(): EffectStudioTab = when {
@@ -162,6 +175,82 @@ fun EffectCatalogItem.toStudioTab(): EffectStudioTab = when {
     category == EffectCategory.SHAKE_MOTION || category == EffectCategory.BLUR_FOCUS -> EffectStudioTab.MOTION
     category == EffectCategory.DISTORTION_GLITCH || category == EffectCategory.RETRO_VHS -> EffectStudioTab.VHS_GLITCH
     else -> EffectStudioTab.ALL
+}
+
+fun EffectCatalogItem.arabicDisplayName(): String = when (id) {
+    "motion_tile" -> "تكرار الحركة"
+    "hard_shake" -> "اهتزاز قوي"
+    "smooth_shake" -> "اهتزاز ناعم"
+    "zoom_pulse" -> "نبض التكبير"
+    "spin_vortex" -> "دوران دوامة"
+    "tile_grid" -> "شبكة التكرار"
+    "radial_zoom_blur" -> "ضبابية شعاعية"
+    "dir_motion_blur" -> "ضبابية اتجاهية"
+    "gaussian_blur" -> "ضبابية غاوسية"
+    "lens_bokeh" -> "بوكيه العدسة"
+    "sharpen_clarity" -> "وضوح وحدّة"
+    "rgb_split" -> "انقسام RGB"
+    "exposure_flash" -> "ومضة سطوع"
+    "glow_bloom" -> "توهج نيون"
+    "hue_shift" -> "تدرج ألوان"
+    "color_adjust" -> "سطوع وتشبّع"
+    "duotone" -> "ثنائي اللون"
+    "invert" -> "عكس الألوان"
+    "vignette" -> "تظليل الحواف"
+    "bw" -> "أبيض وأسود"
+    "ripple" -> "تموّج مائي"
+    "twirl" -> "دوامة ملتوية"
+    "bulge_pinch" -> "انتفاخ وضغط"
+    "fisheye" -> "عين السمكة"
+    "glitch" -> "خلل رقمي"
+    "pixelate" -> "بكسلّة"
+    "turbulent_displace" -> "موجة مضطربة"
+    "mirror_lr" -> "مرآة يمين/يسار"
+    "mirror_tb" -> "مرآة أعلى/أسفل"
+    "quad_mirror" -> "مرآة رباعية"
+    "kaleidoscope" -> "مشكال"
+    "vhs_tape" -> "شريط VHS"
+    "scanlines" -> "خطوط التلفاز"
+    "film_grain" -> "تحبب الفيلم"
+    "halftone" -> "نقاط كوميك"
+    else -> name
+}
+
+fun EffectParamSpec.arabicDisplayLabel(): String = when (key) {
+    "mirror_edges" -> "عكس الحواف"
+    "offset_x" -> "إزاحة أفقية"
+    "offset_y" -> "إزاحة عمودية"
+    "amplitude" -> "القوة"
+    "frequency" -> "التردد"
+    "decay" -> "التلاشي"
+    "angle" -> "الزاوية"
+    "grid_size" -> "حجم الشبكة"
+    "amount" -> "المقدار"
+    "center_x" -> "مركز البؤرة"
+    "radius" -> "نصف القطر"
+    "highlight" -> "بريق الإضاءة"
+    "distance" -> "مسافة الانقسام"
+    "exposure" -> "التعريض"
+    "hue" -> "درجة اللون"
+    "speed" -> "السرعة"
+    "brightness" -> "السطوع"
+    "contrast" -> "التباين"
+    "saturation" -> "التشبّع"
+    "mix" -> "نسبة المزج"
+    "size" -> "الحجم"
+    "softness" -> "النعومة"
+    "height" -> "الارتفاع"
+    "curvature" -> "الانحناء"
+    "block_size" -> "حجم البكسل"
+    "offset" -> "المحور"
+    "sides" -> "عدد الأوجه"
+    "rotation" -> "الدوران"
+    "tracking" -> "التشويش الخطي"
+    "bleed" -> "نزيف الألوان"
+    "noise" -> "الضوضاء"
+    "density" -> "الكثافة"
+    "dot_size" -> "حجم النقاط"
+    else -> label
 }
 
 @Serializable
@@ -189,7 +278,8 @@ data class EffectCatalogItem(
 data class EffectKeyframe(
     val id: String,
     val timeProgress: Float,
-    val intensity: Float
+    val intensity: Float,
+    val easing: KeyframeEasing = KeyframeEasing.LINEAR
 )
 
 @Serializable
@@ -200,24 +290,92 @@ data class ShaderEffectPass(
     val category: EffectCategory,
     val intensity: Float = 0.7f,
     val params: Map<String, Float> = emptyMap(),
-    val keyframes: List<EffectKeyframe> = emptyList()
+    val keyframes: List<EffectKeyframe> = emptyList(),
+    val paramKeyframes: Map<String, List<ParameterKeyframe>> = emptyMap(),
+    val isEnabled: Boolean = true,
+    val blendMode: EffectBlendMode = EffectBlendMode.NORMAL,
+    val passOpacity: Float = 1.0f
 ) {
     fun evaluateIntensityAt(progress: Float): Float {
-        if (keyframes.isEmpty()) return intensity.coerceIn(0f, 1f)
-        val sorted = keyframes.sortedBy { it.timeProgress }
+        val list = keyframesForProperty(PARAM_KEY_INTENSITY)
+        return interpolateParameterKeyframes(
+            keyframes = list,
+            progress = progress,
+            staticValue = intensity,
+            minValue = 0f,
+            maxValue = 1f
+        )
+    }
+
+    fun evaluateOpacityAt(progress: Float): Float {
+        val list = paramKeyframes[PARAM_KEY_OPACITY].orEmpty()
+        return interpolateParameterKeyframes(
+            keyframes = list,
+            progress = progress,
+            staticValue = passOpacity,
+            minValue = 0f,
+            maxValue = 1f
+        )
+    }
+
+    fun evaluateParamAt(
+        key: String,
+        progress: Float,
+        fallback: Float = 0.5f,
+        minValue: Float = -Float.MAX_VALUE,
+        maxValue: Float = Float.MAX_VALUE
+    ): Float {
+        val list = paramKeyframes[key].orEmpty()
+        return interpolateParameterKeyframes(
+            keyframes = list,
+            progress = progress,
+            staticValue = param(key, fallback),
+            minValue = minValue,
+            maxValue = maxValue
+        )
+    }
+
+    fun keyframesForProperty(key: String): List<ParameterKeyframe> {
+        return if (key == PARAM_KEY_INTENSITY) {
+            if (keyframes.isNotEmpty()) {
+                keyframes.map { kf ->
+                    ParameterKeyframe(
+                        id = kf.id,
+                        time = kf.timeProgress,
+                        value = kf.intensity,
+                        easing = kf.easing
+                    )
+                }.sortedBy { it.time }
+            } else {
+                paramKeyframes[PARAM_KEY_INTENSITY].orEmpty().sortedBy { it.time }
+            }
+        } else {
+            paramKeyframes[key].orEmpty().sortedBy { it.time }
+        }
+    }
+
+    fun hasKeyframesForProperty(key: String): Boolean = keyframesForProperty(key).isNotEmpty()
+
+    fun keyframeNear(key: String, progress: Float, tolerance: Float = 0.03f): ParameterKeyframe? {
         val p = progress.coerceIn(0f, 1f)
-        if (sorted.size == 1 || p <= sorted.first().timeProgress) {
-            return sorted.first().intensity.coerceIn(0f, 1f)
+        return keyframesForProperty(key).minByOrNull { abs(it.time - p) }?.takeIf { abs(it.time - p) <= tolerance }
+    }
+
+    fun hasKeyframeNear(key: String, progress: Float, tolerance: Float = 0.03f): Boolean =
+        keyframeNear(key, progress, tolerance) != null
+
+    fun allKeyframeTimes(): List<Float> {
+        val all = buildList {
+            keyframes.forEach { add(it.timeProgress.coerceIn(0f, 1f)) }
+            paramKeyframes.values.flatten().forEach { add(it.time.coerceIn(0f, 1f)) }
+        }.sorted()
+        val distinct = mutableListOf<Float>()
+        for (t in all) {
+            if (distinct.none { abs(it - t) <= 0.005f }) {
+                distinct.add(t)
+            }
         }
-        if (p >= sorted.last().timeProgress) {
-            return sorted.last().intensity.coerceIn(0f, 1f)
-        }
-        val nextIdx = sorted.indexOfFirst { it.timeProgress >= p }.coerceAtLeast(1)
-        val prev = sorted[nextIdx - 1]
-        val next = sorted[nextIdx]
-        val span = (next.timeProgress - prev.timeProgress).takeIf { abs(it) > 0.0001f } ?: 1f
-        val t = ((p - prev.timeProgress) / span).coerceIn(0f, 1f)
-        return (prev.intensity + (next.intensity - prev.intensity) * t).coerceIn(0f, 1f)
+        return distinct
     }
 
     fun param(key: String, fallback: Float = 0.5f): Float = params[key] ?: fallback
@@ -1125,7 +1283,7 @@ data class TimelineScene(
         }
 
     fun resolvedEffectPasses(): List<ShaderEffectPass> {
-        val activePasses = effectPasses.filter { it.effectId != "none" }
+        val activePasses = effectPasses.filter { it.effectId != "none" && it.isEnabled }
         if (activePasses.isNotEmpty()) return activePasses
         if (effect.effectId != "none" && effect.intensity > 0.005f) {
             val catalogItem = EffectCatalog.findById(effect.effectId)

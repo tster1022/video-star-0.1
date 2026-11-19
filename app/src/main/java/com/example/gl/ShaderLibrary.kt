@@ -23,23 +23,50 @@ void main() {
 }
 """
 
+    const val SOURCE_VERTEX_SHADER_2D = """#version 300 es
+layout(location = 0) in vec4 aPosition;
+layout(location = 1) in vec4 aTexCoord;
+out vec2 vSceneUv;
+out vec2 vTexCoord;
+uniform mat4 uTexMatrix;
+uniform mat4 uSourceTexMatrix;
+void main() {
+    gl_Position = aPosition;
+    vec4 sceneCoord = uTexMatrix * aTexCoord;
+    vSceneUv = sceneCoord.xy;
+    vTexCoord = (uSourceTexMatrix * sceneCoord).xy;
+}
+"""
+
     const val PASSTHROUGH_OES_FRAGMENT_SHADER = """#version 300 es
 #extension GL_OES_EGL_image_external_OES : require
 precision highp float;
+in vec2 vSceneUv;
 in vec2 vTexCoord;
 uniform samplerExternalOES uOesTexture;
+uniform vec4 uBgColor;
 out vec4 outColor;
 void main() {
+    if (vSceneUv.x < 0.0 || vSceneUv.x > 1.0 || vSceneUv.y < 0.0 || vSceneUv.y > 1.0) {
+        outColor = uBgColor;
+        return;
+    }
     outColor = texture(uOesTexture, vTexCoord);
 }
 """
 
     const val PASSTHROUGH_2D_FRAGMENT_SHADER = """#version 300 es
 precision highp float;
+in vec2 vSceneUv;
 in vec2 vTexCoord;
 uniform sampler2D uTexture;
+uniform vec4 uBgColor;
 out vec4 outColor;
 void main() {
+    if (vSceneUv.x < 0.0 || vSceneUv.x > 1.0 || vSceneUv.y < 0.0 || vSceneUv.y > 1.0) {
+        outColor = uBgColor;
+        return;
+    }
     outColor = texture(uTexture, vTexCoord);
 }
 """
@@ -53,11 +80,17 @@ void main() {
         return buildFragmentShader(body)
     }
 
-    fun extractUniformParams(pass: ShaderEffectPass): FloatArray {
+    fun extractUniformParams(pass: ShaderEffectPass, progress: Float = 0f): FloatArray {
         val item = EffectCatalog.findById(pass.effectId)
-        val p1 = item?.params?.getOrNull(0)?.let { pass.param(it.key, it.defaultValue) } ?: 0.5f
-        val p2 = item?.params?.getOrNull(1)?.let { pass.param(it.key, it.defaultValue) } ?: 0.5f
-        val p3 = item?.params?.getOrNull(2)?.let { pass.param(it.key, it.defaultValue) } ?: 0.5f
+        val p1 = item?.params?.getOrNull(0)?.let {
+            pass.evaluateParamAt(it.key, progress, it.defaultValue, it.minValue, it.maxValue)
+        } ?: 0.5f
+        val p2 = item?.params?.getOrNull(1)?.let {
+            pass.evaluateParamAt(it.key, progress, it.defaultValue, it.minValue, it.maxValue)
+        } ?: 0.5f
+        val p3 = item?.params?.getOrNull(2)?.let {
+            pass.evaluateParamAt(it.key, progress, it.defaultValue, it.minValue, it.maxValue)
+        } ?: 0.5f
         return floatArrayOf(p1, p2, p3)
     }
 
@@ -72,7 +105,18 @@ uniform float uParam1;
 uniform float uParam2;
 uniform float uParam3;
 uniform vec4 uTintColor;
+uniform int uBlendMode;
 out vec4 outColor;
+
+vec3 applyBlendMode(vec3 base, vec3 top, int mode) {
+    if (mode == 1) return clamp(base + top, 0.0, 1.0);
+    if (mode == 2) return base * top;
+    if (mode == 3) return 1.0 - (1.0 - base) * (1.0 - top);
+    if (mode == 4) {
+        return mix(2.0 * base * top, 1.0 - 2.0 * (1.0 - base) * (1.0 - top), step(0.5, base));
+    }
+    return top;
+}
 
 float hash12(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -113,7 +157,8 @@ void main() {
     vec4 orig = texture(uTexture, uv);
     vec4 c = orig;
     $body
-    outColor = mix(orig, c, k);
+    vec3 blended = applyBlendMode(orig.rgb, clamp(c.rgb, 0.0, 1.0), uBlendMode);
+    outColor = vec4(mix(orig.rgb, blended, k), orig.a);
 }
 """
 

@@ -218,44 +218,49 @@ fun MixClipsScreen(
                     }
                 }
 
-                // Translucent Gray iOS Transition Playback Scrubber Bar
+                // Semi-Hidden Frosted iOS Transition Playback Scrubber Bar
                 Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = ClassicPlayerOverlay,
+                    shape = RoundedCornerShape(11.dp),
+                    color = Color(0xFF101015).copy(alpha = 0.28f),
+                    border = BorderStroke(0.6.dp, Color.White.copy(alpha = 0.16f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(48.dp)
+                            .height(36.dp)
                             .padding(horizontal = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(
                             onClick = viewModel::togglePlayback,
-                            modifier = Modifier.size(44.dp).testTag("mix_play_pause")
+                            modifier = Modifier.size(34.dp).testTag("mix_play_pause")
                         ) {
                             Icon(
                                 imageVector = if (uiState.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                                 contentDescription = "Play or Pause",
-                                tint = VideoStarWhite
+                                tint = VideoStarWhite,
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                         IosThinSlider(
                             value = uiState.previewProgress,
                             onValueChange = viewModel::scrubTransition,
-                            activeTrackColor = VideoStarWhite,
-                            inactiveTrackColor = VideoStarWhite.copy(alpha = 0.35f),
+                            activeTrackColor = VideoStarWhite.copy(alpha = 0.90f),
+                            inactiveTrackColor = VideoStarWhite.copy(alpha = 0.24f),
+                            thumbSize = 11.dp,
+                            trackHeight = 2.dp,
                             modifier = Modifier.weight(1f).testTag("mix_preview_slider")
                         )
                         IconButton(
                             onClick = viewModel::toggleDrawer,
-                            modifier = Modifier.size(44.dp).testTag("mix_drawer_toggle")
+                            modifier = Modifier.size(34.dp).testTag("mix_drawer_toggle")
                         ) {
                             Icon(
                                 imageVector = if (uiState.isDrawerExpanded) Icons.Rounded.KeyboardArrowDown else Icons.Rounded.KeyboardArrowUp,
                                 contentDescription = "Toggle Transition Drawer",
-                                tint = VideoStarWhite
+                                tint = VideoStarWhite,
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     }

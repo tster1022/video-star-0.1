@@ -111,8 +111,9 @@ fun MediaUriThumbnail(
             modifier = modifier
         )
     } else {
+        val context = LocalContext.current
         val frameBitmap by produceState<Bitmap?>(initialValue = null, uriString, frameTimeMs) {
-            value = MediaImportHelper.extractVideoFrame(uriString, frameTimeMs)
+            value = MediaImportHelper.extractVideoFrame(uriString, frameTimeMs, context)
         }
         val bmp = frameBitmap
         if (bmp != null) {

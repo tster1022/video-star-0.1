@@ -365,4 +365,382 @@ class VideoStarShadersAndToolsTest {
             MotionPreset.entries.map { it.label }
         )
     }
+
+    @Test
+    fun `effects studio 3-level stack manages visibility duplicate reorder blend mode favorites and undo redo`() {
+        val project = VideoStarRepository.createProject("استوديو الطبقات", AspectRatioMode.PORTRAIT)
+        val vm = com.example.ui.screens.effects.EffectsStudioViewModel(
+            projectId = project.id,
+            sceneIndices = listOf(0),
+            targetLayerId = "layer_2"
+        )
+
+        assertEquals("الطبقة 2", vm.uiState.value.layerDisplayTitle)
+        assertEquals(com.example.ui.screens.effects.StudioPanelLevel.STACK, vm.uiState.value.panelLevel)
+
+        vm.openEffectLibrary()
+        assertEquals(com.example.ui.screens.effects.StudioPanelLevel.LIBRARY, vm.uiState.value.panelLevel)
+
+        val rgb = EffectCatalog.findById("rgb_split")!!
+        val blur = EffectCatalog.findById("gaussian_blur")!!
+        vm.addEffectFromLibrary(rgb)
+        assertEquals(com.example.ui.screens.effects.StudioPanelLevel.EDITOR, vm.uiState.value.panelLevel)
+        assertEquals(1, vm.uiState.value.passes.size)
+        assertTrue(vm.uiState.value.canUndo)
+
+        vm.updatePassBlendMode(com.example.model.EffectBlendMode.ADD)
+        vm.updatePassOpacity(0.8f)
+        assertEquals(com.example.model.EffectBlendMode.ADD, vm.uiState.value.activePass?.blendMode)
+        assertEquals(0.8f, vm.uiState.value.activePass?.passOpacity ?: 0f, 0.01f)
+
+        vm.backToEffectStack()
+        assertEquals(com.example.ui.screens.effects.StudioPanelLevel.STACK, vm.uiState.value.panelLevel)
+
+        vm.addEffectFromLibrary(blur)
+        assertEquals(2, vm.uiState.value.passes.size)
+
+        // Move second pass to index 0
+        vm.movePass(1, 0)
+        assertEquals("gaussian_blur", vm.uiState.value.passes[0].effectId)
+        assertEquals("rgb_split", vm.uiState.value.passes[1].effectId)
+
+        // Eye toggle disables pass in preview resolvedEffectPasses() while keeping it in stack
+        vm.togglePassEnabled(0)
+        assertFalse(vm.uiState.value.passes[0].isEnabled)
+        assertEquals(1, vm.uiState.value.previewScene.resolvedEffectPasses().size)
+
+        // Duplicate pass increases stack to 3
+        vm.duplicatePass(1)
+        assertEquals(3, vm.uiState.value.passes.size)
+
+        // Undo restores back to 2 passes
+        vm.undo()
+        assertEquals(2, vm.uiState.value.passes.size)
+        assertTrue(vm.uiState.value.canRedo)
+
+        vm.redo()
+        assertEquals(3, vm.uiState.value.passes.size)
+
+        // Favorites filter
+        vm.toggleFavoritesFilter()
+        assertTrue(vm.uiState.value.displayedEffects.size < 35)
+        vm.toggleFavoritesFilter()
+        assertEquals(35, vm.uiState.value.displayedEffects.size)
+
+        VideoStarRepository.deleteProject(project.id)
+    }
+
+    @Test
+    fun `per-parameter keyframe system stores time value easing animates shader uniforms and supports navigation`() {
+        val project = VideoStarRepository.createProject("اختبار نقاط الحركة", AspectRatioMode.PORTRAIT)
+        val vm = EffectsStudioViewModel(project.id, listOf(0), targetLayerId = "layer_1")
+        val rgb = EffectCatalog.findById("rgb_split")!!
+
+        vm.addEffectFromLibrary(rgb)
+
+        // 1. Animate intensity with EASE_IN easing
+        vm.seekToProgress(0.0f)
+        vm.updateIntensity(0.0f)
+        vm.togglePropertyKeyframe(com.example.model.PARAM_KEY_INTENSITY)
+        vm.updatePropertyKeyframeEasing(
+            com.example.model.PARAM_KEY_INTENSITY,
+            com.example.model.KeyframeEasing.EASE_IN
+        )
+        vm.seekToProgress(1.0f)
+        // Auto-keyframes at 1.0f because intensity already has a keyframe
+        vm.updateIntensity(1.0f)
+
+        // Ease-In at t = 0.5 should be well below linear 0.5
+        val easedMidIntensity = vm.uiState.value.activePass!!.evaluateIntensityAt(0.5f)
+        assertTrue("Expected Ease-In midpoint < 0.4, was $easedMidIntensity", easedMidIntensity < 0.4f)
+
+        // 2. Animate shader param "distance" with STEP easing and verify ShaderLibrary uniform interpolation
+        vm.seekToProgress(0.2f)
+        vm.updatePassParam("distance", 0.2f)
+        vm.togglePropertyKeyframe("distance")
+        vm.updatePropertyKeyframeEasing("distance", com.example.model.KeyframeEasing.STEP)
+
+        vm.seekToProgress(0.8f)
+        vm.updatePassParam("distance", 0.9f) // auto-keyframed at 0.8
+
+        val pass = vm.uiState.value.activePass!!
+        val distanceKfs = pass.keyframesForProperty("distance")
+        assertEquals(2, distanceKfs.size)
+        assertEquals(com.example.model.KeyframeEasing.STEP, distanceKfs[0].easing)
+
+        // At 0.5f, STEP holds first keyframe's value (0.2f); at 0.8f it steps to 0.9f
+        assertEquals(0.2f, ShaderLibrary.extractUniformParams(pass, 0.5f)[0], 0.01f)
+        assertEquals(0.9f, ShaderLibrary.extractUniformParams(pass, 0.8f)[0], 0.01f)
+
+        // Switch first keyframe to LINEAR and check linear midpoint
+        vm.seekToProgress(0.2f)
+        vm.updatePropertyKeyframeEasing("distance", com.example.model.KeyframeEasing.LINEAR)
+        val linearPass = vm.uiState.value.activePass!!
+        assertEquals(0.55f, ShaderLibrary.extractUniformParams(linearPass, 0.5f)[0], 0.02f)
+
+        // 3. Animate pass opacity with keyframe toggles + prev/next jump
+        vm.seekToProgress(0.0f)
+        vm.updatePassOpacity(0.1f)
+        vm.togglePropertyKeyframe(com.example.model.PARAM_KEY_OPACITY)
+        vm.seekToProgress(1.0f)
+        vm.updatePassOpacity(0.9f)
+        assertEquals(0.5f, vm.uiState.value.activePass!!.evaluateOpacityAt(0.5f), 0.02f)
+
+        vm.jumpToPrevKeyframe(com.example.model.PARAM_KEY_OPACITY)
+        assertEquals(0.0f, vm.uiState.value.previewProgress, 0.02f)
+        vm.jumpToNextKeyframe(com.example.model.PARAM_KEY_OPACITY)
+        assertEquals(1.0f, vm.uiState.value.previewProgress, 0.02f)
+
+        // Save to repository and verify persistence
+        var saved = false
+        vm.createAndSave { saved = true }
+        assertTrue(saved)
+        val savedLayer = VideoStarRepository.getProjectById(project.id)!!.layers.first { it.id == "layer_1" }
+        assertEquals(2, savedLayer.effectPasses.first().keyframesForProperty("distance").size)
+        assertEquals(2, savedLayer.effectPasses.first().keyframesForProperty(com.example.model.PARAM_KEY_OPACITY).size)
+
+        VideoStarRepository.deleteProject(project.id)
+    }
+
+    @Test
+    fun `mini keyframe timeline exposes markers supports drag to retime long press delete and undo`() {
+        val project = VideoStarRepository.createProject("مسار النقاط المصغر", AspectRatioMode.PORTRAIT)
+        val vm = EffectsStudioViewModel(project.id, listOf(0), targetLayerId = "layer_1")
+        val blur = EffectCatalog.findById("gaussian_blur")!!
+
+        vm.addEffectFromLibrary(blur)
+        vm.seekToProgress(0.2f)
+        vm.updateIntensity(0.2f)
+        vm.togglePropertyKeyframe(com.example.model.PARAM_KEY_INTENSITY)
+
+        vm.seekToProgress(0.8f)
+        vm.updateIntensity(0.9f)
+
+        val initialMarkers = vm.uiState.value.activePassKeyframeMarkers
+        assertEquals(2, initialMarkers.size)
+        val firstId = initialMarkers.first().keyframeId
+
+        // Drag first keyframe from 0.2f -> 0.5f
+        vm.beginKeyframeDrag()
+        vm.moveKeyframeTime(com.example.model.PARAM_KEY_INTENSITY, firstId, 0.5f)
+
+        val afterDrag = vm.uiState.value.activePassKeyframeMarkers
+        val moved = afterDrag.first { it.keyframeId == firstId }
+        assertEquals(0.5f, moved.time, 0.01f)
+        assertEquals(0.5f, vm.uiState.value.previewProgress, 0.01f)
+
+        // Tap/select keyframe jumps and focuses
+        vm.selectAndSeekKeyframe(com.example.model.PARAM_KEY_INTENSITY, afterDrag.last().time)
+        assertEquals(0.8f, vm.uiState.value.previewProgress, 0.02f)
+
+        // Long-press deletes keyframe and undo restores it
+        vm.deleteKeyframe(com.example.model.PARAM_KEY_INTENSITY, firstId)
+        assertEquals(1, vm.uiState.value.activePassKeyframeMarkers.size)
+
+        vm.undo()
+        assertEquals(2, vm.uiState.value.activePassKeyframeMarkers.size)
+
+        VideoStarRepository.deleteProject(project.id)
+    }
+
+    @Test
+    fun `effect stack drag reorder updates shader render pass chain in single undo step`() {
+        val project = VideoStarRepository.createProject("اختبار ترتيب الشادر", AspectRatioMode.PORTRAIT)
+        val vm = EffectsStudioViewModel(project.id, listOf(0), targetLayerId = "layer_1")
+
+        val rgb = EffectCatalog.findById("rgb_split")!!
+        val blur = EffectCatalog.findById("gaussian_blur")!!
+        val vhs = EffectCatalog.findById("vhs_tape")!!
+
+        vm.addEffectFromLibrary(rgb)
+        vm.backToEffectStack()
+        vm.addEffectFromLibrary(blur)
+        vm.backToEffectStack()
+        vm.addEffectFromLibrary(vhs)
+        vm.backToEffectStack()
+
+        // Initial render chain: [rgb_split, gaussian_blur, vhs_tape]; select middle pass (gaussian_blur at index 1)
+        vm.selectPass(1)
+        assertEquals(listOf("rgb_split", "gaussian_blur", "vhs_tape"), vm.uiState.value.passes.map { it.effectId })
+        assertEquals(1, vm.uiState.value.selectedPassIndex)
+        assertEquals(
+            listOf("rgb_split", "gaussian_blur", "vhs_tape"),
+            vm.uiState.value.previewScene.resolvedEffectPasses().map { it.effectId }
+        )
+
+        // Simulate continuous drag of index 0 (rgb_split) across index 1 and 2 to the end
+        vm.beginPassReorderDrag()
+        vm.movePass(0, 1, recordUndo = false)
+        vm.movePass(1, 2, recordUndo = false)
+
+        // Render chain & primary effect updated immediately; selectedPassIndex tracked gaussian_blur to index 0
+        assertEquals(listOf("gaussian_blur", "vhs_tape", "rgb_split"), vm.uiState.value.passes.map { it.effectId })
+        assertEquals(
+            listOf("gaussian_blur", "vhs_tape", "rgb_split"),
+            vm.uiState.value.previewScene.resolvedEffectPasses().map { it.effectId }
+        )
+        assertEquals("gaussian_blur", vm.uiState.value.previewScene.effect.effectId)
+        assertEquals(0, vm.uiState.value.selectedPassIndex)
+
+        // Persist and verify saved layer preserves new pass execution order
+        var saved = false
+        vm.createAndSave { saved = true }
+        assertTrue(saved)
+        val persistedIds = VideoStarRepository.getProjectById(project.id)!!
+            .layers.first { it.id == "layer_1" }
+            .effectPasses.map { it.effectId }
+        assertEquals(listOf("gaussian_blur", "vhs_tape", "rgb_split"), persistedIds)
+
+        // Single undo restores the pre-drag chain order in one step
+        vm.undo()
+        assertEquals(listOf("rgb_split", "gaussian_blur", "vhs_tape"), vm.uiState.value.passes.map { it.effectId })
+        assertEquals("rgb_split", vm.uiState.value.previewScene.resolvedEffectPasses().first().effectId)
+
+        // Redo re-applies the dragged order
+        vm.redo()
+        assertEquals(listOf("gaussian_blur", "vhs_tape", "rgb_split"), vm.uiState.value.passes.map { it.effectId })
+
+        VideoStarRepository.deleteProject(project.id)
+    }
+
+    @Test
+    fun `history helper coalesces continuous parameter drags tracks layer order adjustments and discards noop gestures`() {
+        var fakeClockMs = 1_000L
+        val historyHelper = com.example.ui.screens.effects.EffectsStudioHistoryHelper(
+            maxHistorySize = 40,
+            coalesceWindowMs = 600L,
+            clockMs = { fakeClockMs }
+        )
+        val project = VideoStarRepository.createProject("اختبار سجل التعديلات", AspectRatioMode.PORTRAIT)
+        val vm = EffectsStudioViewModel(
+            projectId = project.id,
+            sceneIndices = listOf(0),
+            targetLayerId = "layer_1",
+            historyHelper = historyHelper
+        )
+
+        val rgb = EffectCatalog.findById("rgb_split")!!
+        val blur = EffectCatalog.findById("gaussian_blur")!!
+        vm.addEffectFromLibrary(rgb)
+        vm.addEffectFromLibrary(blur)
+        assertEquals(2, historyHelper.undoCount)
+
+        // 1. Continuous slider drag on intensity collapses into 1 undo step
+        val startIntensity = vm.uiState.value.activePass!!.intensity
+        vm.updateIntensity(0.25f)
+        fakeClockMs += 50L
+        vm.updateIntensity(0.55f)
+        fakeClockMs += 50L
+        vm.updateIntensity(0.85f)
+        vm.commitParameterEdit()
+        assertEquals(3, historyHelper.undoCount)
+        assertEquals(0.85f, vm.uiState.value.activePass!!.intensity, 0.01f)
+        assertEquals("تعديل الشدة", vm.uiState.value.undoActionLabel)
+
+        // Second separate drag on intensity after commit creates a new undo step even quickly
+        fakeClockMs += 20L
+        vm.updateIntensity(0.40f)
+        vm.commitParameterEdit()
+        assertEquals(4, historyHelper.undoCount)
+
+        // Adjusting a shader param & opacity also tracks Undo/Redo cleanly
+        vm.updatePassParam("blur_radius", 0.3f)
+        vm.commitParameterEdit()
+        vm.updatePassOpacity(0.6f)
+        vm.commitParameterEdit()
+        assertEquals(6, historyHelper.undoCount)
+
+        // Undo opacity -> undo param -> undo 2nd intensity -> undo 1st intensity back to start
+        vm.undo()
+        assertEquals(1.0f, vm.uiState.value.activePass!!.passOpacity, 0.01f)
+        vm.undo()
+        vm.undo()
+        assertEquals(0.85f, vm.uiState.value.activePass!!.intensity, 0.01f)
+        vm.undo()
+        assertEquals(startIntensity, vm.uiState.value.activePass!!.intensity, 0.01f)
+        assertTrue(vm.uiState.value.canRedo)
+
+        // Redo brings intensity right back
+        vm.redo()
+        assertEquals(0.85f, vm.uiState.value.activePass!!.intensity, 0.01f)
+
+        // 2. No-op drag gesture (dragged and dropped back in original place) leaves no ghost undo entry
+        val undoBeforeNoop = historyHelper.undoCount
+        vm.beginPassReorderDrag()
+        vm.movePass(0, 1, recordUndo = false)
+        vm.movePass(1, 0, recordUndo = false)
+        vm.endPassReorderDrag()
+        assertEquals(undoBeforeNoop, historyHelper.undoCount)
+
+        // 3. Layer order adjustment tracked and reversible via Undo/Redo and persisted on save
+        val initialLayers = vm.uiState.value.layerOrderIds
+        assertTrue(initialLayers.size >= 2)
+        val firstLayerId = initialLayers[0]
+        val secondLayerId = initialLayers[1]
+
+        vm.beginLayerOrderAdjust()
+        vm.moveLayerOrder(0, 1, recordUndo = false)
+        vm.endLayerOrderAdjust()
+
+        assertEquals(secondLayerId, vm.uiState.value.layerOrderIds[0])
+        assertEquals(firstLayerId, vm.uiState.value.layerOrderIds[1])
+        assertEquals("إعادة ترتيب الطبقات", vm.uiState.value.undoActionLabel)
+
+        vm.undo()
+        assertEquals(initialLayers, vm.uiState.value.layerOrderIds)
+
+        vm.redo()
+        assertEquals(secondLayerId, vm.uiState.value.layerOrderIds[0])
+
+        var saved = false
+        vm.createAndSave { saved = true }
+        assertTrue(saved)
+        val persistedLayerIds = VideoStarRepository.getProjectById(project.id)!!.layers.map { it.id }
+        assertEquals(secondLayerId, persistedLayerIds[0])
+        assertEquals(firstLayerId, persistedLayerIds[1])
+
+        VideoStarRepository.deleteProject(project.id)
+    }
+
+    @Test
+    fun `adding shader effect preserves source video clip in EffectsStudio and target layer preview`() {
+        val project = VideoStarRepository.createProject("اختبار بقاء الفيديو", AspectRatioMode.PORTRAIT)
+        val sceneVideo = MediaClip.Video(
+            id = "vid_scene_1",
+            uriString = "file:///tmp/scene_video.mp4",
+            startTrimMs = 0L,
+            endTrimMs = 4_000L,
+            durationMs = 4_000L
+        )
+        val layer2Video = MediaClip.Video(
+            id = "vid_layer_2",
+            uriString = "file:///tmp/layer2_video.mp4",
+            startTrimMs = 0L,
+            endTrimMs = 3_500L,
+            durationMs = 3_500L
+        )
+        VideoStarRepository.addOrUpdateVideoClip(project.id, sceneVideo)
+        val existingLayers = VideoStarRepository.getProjectById(project.id)!!.layers.toMutableList()
+        val l2Idx = existingLayers.indexOfFirst { it.id == "layer_2" }
+        existingLayers[l2Idx] = existingLayers[l2Idx].copy(mediaClip = layer2Video)
+        VideoStarRepository.syncProjectLayers(project.id, existingLayers)
+
+        val studioSceneVm = EffectsStudioViewModel(project.id, listOf(0))
+        val rgb = EffectCatalog.findById("rgb_split")!!
+        studioSceneVm.addEffectFromLibrary(rgb)
+        assertEquals("file:///tmp/scene_video.mp4", studioSceneVm.uiState.value.previewScene.clip?.uriString)
+        assertTrue(studioSceneVm.uiState.value.previewScene.resolvedEffectPasses().any { it.effectId == "rgb_split" })
+
+        val studioLayer2Vm = EffectsStudioViewModel(project.id, listOf(0), targetLayerId = "layer_2")
+        studioLayer2Vm.addEffectFromLibrary(rgb)
+        assertEquals("file:///tmp/layer2_video.mp4", studioLayer2Vm.uiState.value.previewScene.clip?.uriString)
+        assertTrue(studioLayer2Vm.uiState.value.previewScene.resolvedEffectPasses().any { it.effectId == "rgb_split" })
+
+        VideoStarRepository.deleteProject(project.id)
+    }
 }
+
+
+
+
+

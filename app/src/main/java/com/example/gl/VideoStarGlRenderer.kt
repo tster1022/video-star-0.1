@@ -18,8 +18,8 @@ import javax.microedition.khronos.opengles.GL10
 /**
  * Multi-pass OpenGL ES 3.0 renderer for live preview stages.
  * - Supports external OES video frames via SurfaceTexture
- * - Supports Bitmap frames (photos / rendered fallback bitmaps) via GL_TEXTURE_2D
- * - Renders SceneTransform + multi-pass ShaderEffectPass pipeline via ping-pong FBOs
+ * - Supports Bitmap frames (photos / extracted video poster / fallback calibration bitmaps) via GL_TEXTURE_2D
+ * - Preserves source aspect ratio (Crop / Fit), applies SceneTransform + multi-pass ShaderEffectPass pipeline
  */
 class VideoStarGlRenderer(
     private val onSurfaceTextureReady: (SurfaceTexture) -> Unit = {},
@@ -44,6 +44,21 @@ class VideoStarGlRenderer(
     @Volatile
     private var frameAvailable: Boolean = false
 
+    @Volatile
+    private var hasReceivedVideoFrame: Boolean = false
+
+    @Volatile
+    private var videoWidth: Int = 0
+
+    @Volatile
+    private var videoHeight: Int = 0
+
+    @Volatile
+    private var bitmapWidth: Int = 0
+
+    @Volatile
+    private var bitmapHeight: Int = 0
+
     private var surfaceWidth: Int = 720
     private var surfaceHeight: Int = 720
 
@@ -52,6 +67,11 @@ class VideoStarGlRenderer(
     private var surfaceTexture: SurfaceTexture? = null
     private val oesTexMatrix = FloatArray(16).apply { Matrix.setIdentityM(this, 0) }
     private val identityMatrix = FloatArray(16).apply { Matrix.setIdentityM(this, 0) }
+    private val bitmapFlipYMatrix = FloatArray(16).apply {
+        Matrix.setIdentityM(this, 0)
+        Matrix.translateM(this, 0, 0f, 1f, 0f)
+        Matrix.scaleM(this, 0, 1f, -1f, 1f)
+    }
     private val transformTexMatrix = FloatArray(16).apply { Matrix.setIdentityM(this, 0) }
 
     private var oesProgram: Int = 0
@@ -79,16 +99,47 @@ class VideoStarGlRenderer(
         isVideoSource = isVideo
     }
 
+    fun setSourceDimensions(width: Int, height: Int) {
+        if (width > 0 && height > 0) {
+            videoWidth = width
+            videoHeight = height
+        }
+    }
+
+    fun resetVideoSourceState() {
+        hasReceivedVideoFrame = false
+        frameAvailable = false
+        videoWidth = 0
+        videoHeight = 0
+    }
+
     fun setSourceBitmap(bitmap: Bitmap?) {
-        pendingBitmap = bitmap
-        hasNewBitmap = bitmap != null
+        if (bitmap != null && !bitmap.isRecycled) {
+            bitmapWidth = bitmap.width
+            bitmapHeight = bitmap.height
+            pendingBitmap = bitmap
+            hasNewBitmap = true
+        }
+    }
+
+    fun onContextCreated() {
+        onSurfaceCreated(null, null)
+    }
+
+    fun onViewportChanged(width: Int, height: Int) {
+        onSurfaceChanged(null, width, height)
+    }
+
+    fun onDraw() {
+        onDrawFrame(null)
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         GLES30.glClearColor(0f, 0f, 0f, 1f)
 
-        oesProgram = buildProgram(ShaderLibrary.VERTEX_SHADER_2D, ShaderLibrary.PASSTHROUGH_OES_FRAGMENT_SHADER)
-        blitProgram = buildProgram(ShaderLibrary.VERTEX_SHADER_2D, ShaderLibrary.PASSTHROUGH_2D_FRAGMENT_SHADER)
+        shaderProgramCache.clear()
+        oesProgram = buildProgram(ShaderLibrary.SOURCE_VERTEX_SHADER_2D, ShaderLibrary.PASSTHROUGH_OES_FRAGMENT_SHADER)
+        blitProgram = buildProgram(ShaderLibrary.SOURCE_VERTEX_SHADER_2D, ShaderLibrary.PASSTHROUGH_2D_FRAGMENT_SHADER)
 
         val textures = IntArray(2)
         GLES30.glGenTextures(2, textures, 0)
@@ -107,13 +158,35 @@ class VideoStarGlRenderer(
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
 
+        surfaceTexture?.release()
+        hasReceivedVideoFrame = false
+        frameAvailable = false
+
         val st = SurfaceTexture(oesTextureId).apply {
             setOnFrameAvailableListener {
                 frameAvailable = true
+                hasReceivedVideoFrame = true
                 onRequestRender()
             }
         }
         surfaceTexture = st
+
+        val initialBmp = pendingBitmap
+        if (initialBmp != null && !initialBmp.isRecycled) {
+            bitmapWidth = initialBmp.width
+            bitmapHeight = initialBmp.height
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, bitmapTextureId)
+            GLUtils.texImage2D(GLES30.GL_TEXTURE_2D, 0, initialBmp, 0)
+            hasNewBitmap = false
+        } else {
+            val fallbackGrid = ProceduralTestGridFactory.createTestGridBitmap(256, 256)
+            bitmapWidth = fallbackGrid.width
+            bitmapHeight = fallbackGrid.height
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, bitmapTextureId)
+            GLUtils.texImage2D(GLES30.GL_TEXTURE_2D, 0, fallbackGrid, 0)
+            fallbackGrid.recycle()
+        }
+
         onSurfaceTextureReady(st)
     }
 
@@ -125,23 +198,33 @@ class VideoStarGlRenderer(
     }
 
     override fun onDrawFrame(gl: GL10?) {
+        if (oesProgram == 0 || blitProgram == 0) return
+
         val scene = activeScene
         val bgArgb = scene?.transform?.bgColorArgb?.toInt() ?: 0xFF000000.toInt()
         val bgR = android.graphics.Color.red(bgArgb) / 255f
         val bgG = android.graphics.Color.green(bgArgb) / 255f
         val bgB = android.graphics.Color.blue(bgArgb) / 255f
-        GLES30.glClearColor(bgR, bgG, bgB, 1f)
+        val bgA = android.graphics.Color.alpha(bgArgb) / 255f
+        GLES30.glClearColor(bgR, bgG, bgB, bgA)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
 
         if (frameAvailable) {
-            surfaceTexture?.updateTexImage()
-            surfaceTexture?.getTransformMatrix(oesTexMatrix)
+            val st = surfaceTexture
+            if (st != null) {
+                runCatching {
+                    st.updateTexImage()
+                    st.getTransformMatrix(oesTexMatrix)
+                }
+            }
             frameAvailable = false
         }
 
         if (hasNewBitmap) {
             val bmp = pendingBitmap
             if (bmp != null && !bmp.isRecycled) {
+                bitmapWidth = bmp.width
+                bitmapHeight = bmp.height
                 GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, bitmapTextureId)
                 GLUtils.texImage2D(GLES30.GL_TEXTURE_2D, 0, bmp, 0)
             }
@@ -152,17 +235,21 @@ class VideoStarGlRenderer(
             allocatePingPongFbos(surfaceWidth, surfaceHeight)
         }
 
-        // Step 1: Blit input source (OES video or 2D Bitmap) + SceneTransform into FBO[0]
-        buildSceneTransformMatrix(scene, transformTexMatrix)
+        val useLiveOes = isVideoSource && hasReceivedVideoFrame
+        val srcW = if (useLiveOes && videoWidth > 0) videoWidth else bitmapWidth
+        val srcH = if (useLiveOes && videoHeight > 0) videoHeight else bitmapHeight
+
+        // Step 1: Blit input source (OES video or 2D Bitmap) + AspectFit/Crop + SceneTransform into FBO[0]
+        buildSceneTransformMatrix(scene, transformTexMatrix, srcW, srcH)
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fboIds[0])
         GLES30.glViewport(0, 0, surfaceWidth, surfaceHeight)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
 
-        if (isVideoSource) {
+        if (useLiveOes) {
             GLES30.glUseProgram(oesProgram)
-            val m = FloatArray(16)
-            Matrix.multiplyMM(m, 0, oesTexMatrix, 0, transformTexMatrix, 0)
-            GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(oesProgram, "uTexMatrix"), 1, false, m, 0)
+            GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(oesProgram, "uTexMatrix"), 1, false, transformTexMatrix, 0)
+            GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(oesProgram, "uSourceTexMatrix"), 1, false, oesTexMatrix, 0)
+            GLES30.glUniform4f(GLES30.glGetUniformLocation(oesProgram, "uBgColor"), bgR, bgG, bgB, bgA)
             GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
             GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)
             GLES30.glUniform1i(GLES30.glGetUniformLocation(oesProgram, "uOesTexture"), 0)
@@ -170,6 +257,8 @@ class VideoStarGlRenderer(
         } else {
             GLES30.glUseProgram(blitProgram)
             GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(blitProgram, "uTexMatrix"), 1, false, transformTexMatrix, 0)
+            GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(blitProgram, "uSourceTexMatrix"), 1, false, bitmapFlipYMatrix, 0)
+            GLES30.glUniform4f(GLES30.glGetUniformLocation(blitProgram, "uBgColor"), bgR, bgG, bgB, bgA)
             GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
             GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, bitmapTextureId)
             GLES30.glUniform1i(GLES30.glGetUniformLocation(blitProgram, "uTexture"), 0)
@@ -182,7 +271,9 @@ class VideoStarGlRenderer(
         val timeSec = localProgress * ((scene?.effectiveDurationMs ?: 3_000L) / 1000f)
 
         for (pass in passes) {
-            val intensity = pass.evaluateIntensityAt(localProgress)
+            if (!pass.isEnabled) continue
+            val opacity = pass.evaluateOpacityAt(localProgress)
+            val intensity = (pass.evaluateIntensityAt(localProgress) * opacity).coerceIn(0f, 1f)
             if (intensity <= 0.005f || pass.effectId == "none") continue
             val prog = getOrCompileShader(pass.effectId)
             if (prog == 0) continue
@@ -201,11 +292,12 @@ class VideoStarGlRenderer(
             GLES30.glUniform1f(GLES30.glGetUniformLocation(prog, "uTime"), timeSec)
             GLES30.glUniform1f(GLES30.glGetUniformLocation(prog, "uIntensity"), intensity)
 
-            val uniformParams = ShaderLibrary.extractUniformParams(pass)
+            val uniformParams = ShaderLibrary.extractUniformParams(pass, localProgress)
             GLES30.glUniform1f(GLES30.glGetUniformLocation(prog, "uParam1"), uniformParams[0])
             GLES30.glUniform1f(GLES30.glGetUniformLocation(prog, "uParam2"), uniformParams[1])
             GLES30.glUniform1f(GLES30.glGetUniformLocation(prog, "uParam3"), uniformParams[2])
             GLES30.glUniform4f(GLES30.glGetUniformLocation(prog, "uTintColor"), 1f, 0.16f, 0.52f, 1f)
+            GLES30.glUniform1i(GLES30.glGetUniformLocation(prog, "uBlendMode"), pass.blendMode.glIndex)
 
             drawFullscreenQuad()
             currentInputIdx = nextTargetIdx
@@ -216,6 +308,8 @@ class VideoStarGlRenderer(
         GLES30.glViewport(0, 0, surfaceWidth, surfaceHeight)
         GLES30.glUseProgram(blitProgram)
         GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(blitProgram, "uTexMatrix"), 1, false, identityMatrix, 0)
+        GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(blitProgram, "uSourceTexMatrix"), 1, false, identityMatrix, 0)
+        GLES30.glUniform4f(GLES30.glGetUniformLocation(blitProgram, "uBgColor"), bgR, bgG, bgB, bgA)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, fboTexIds[currentInputIdx])
         GLES30.glUniform1i(GLES30.glGetUniformLocation(blitProgram, "uTexture"), 0)
@@ -223,23 +317,67 @@ class VideoStarGlRenderer(
     }
 
     fun release() {
-        surfaceTexture?.release()
+        runCatching { surfaceTexture?.release() }
         surfaceTexture = null
-        if (oesProgram != 0) GLES30.glDeleteProgram(oesProgram)
-        if (blitProgram != 0) GLES30.glDeleteProgram(blitProgram)
+        if (oesTextureId != 0 || bitmapTextureId != 0) {
+            val texs = intArrayOf(oesTextureId, bitmapTextureId)
+            GLES30.glDeleteTextures(2, texs, 0)
+            oesTextureId = 0
+            bitmapTextureId = 0
+        }
+        if (oesProgram != 0) {
+            GLES30.glDeleteProgram(oesProgram)
+            oesProgram = 0
+        }
+        if (blitProgram != 0) {
+            GLES30.glDeleteProgram(blitProgram)
+            blitProgram = 0
+        }
         shaderProgramCache.values.forEach { if (it != 0) GLES30.glDeleteProgram(it) }
         shaderProgramCache.clear()
-        GLES30.glDeleteFramebuffers(2, fboIds, 0)
-        GLES30.glDeleteTextures(2, fboTexIds, 0)
+        if (fboWidth > 0) {
+            GLES30.glDeleteFramebuffers(2, fboIds, 0)
+            GLES30.glDeleteTextures(2, fboTexIds, 0)
+            fboWidth = 0
+            fboHeight = 0
+        }
     }
 
-    private fun buildSceneTransformMatrix(scene: TimelineScene?, out: FloatArray) {
+    private fun buildSceneTransformMatrix(
+        scene: TimelineScene?,
+        out: FloatArray,
+        srcW: Int,
+        srcH: Int
+    ) {
         Matrix.setIdentityM(out, 0)
         if (scene == null) return
         val t = scene.transform.evaluatedAt(localProgress)
+
+        var aspectScaleX = 1f
+        var aspectScaleY = 1f
+        if (srcW > 0 && srcH > 0 && surfaceWidth > 0 && surfaceHeight > 0) {
+            val srcAspect = srcW.toFloat() / srcH.toFloat()
+            val dstAspect = surfaceWidth.toFloat() / surfaceHeight.toFloat()
+            if (kotlin.math.abs(srcAspect - dstAspect) > 0.01f) {
+                if (t.isFitMode) {
+                    if (srcAspect > dstAspect) {
+                        aspectScaleY = srcAspect / dstAspect
+                    } else {
+                        aspectScaleX = dstAspect / srcAspect
+                    }
+                } else {
+                    if (srcAspect > dstAspect) {
+                        aspectScaleX = dstAspect / srcAspect
+                    } else {
+                        aspectScaleY = srcAspect / dstAspect
+                    }
+                }
+            }
+        }
+
         Matrix.translateM(out, 0, 0.5f, 0.5f, 0f)
-        val sx = (if (t.flipH) -1f else 1f) / t.scale.coerceAtLeast(0.15f)
-        val sy = (if (t.flipV) -1f else 1f) / t.scale.coerceAtLeast(0.15f)
+        val sx = ((if (t.flipH) -1f else 1f) * aspectScaleX) / t.scale.coerceAtLeast(0.15f)
+        val sy = ((if (t.flipV) -1f else 1f) * aspectScaleY) / t.scale.coerceAtLeast(0.15f)
         Matrix.scaleM(out, 0, sx, sy, 1f)
         if (kotlin.math.abs(t.rotation) > 0.01f) {
             Matrix.rotateM(out, 0, -t.rotation, 0f, 0f, 1f)

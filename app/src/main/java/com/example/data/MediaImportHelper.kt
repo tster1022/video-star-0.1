@@ -250,17 +250,34 @@ object MediaImportHelper {
         )
     }
 
-    suspend fun extractVideoFrame(uriString: String, timeMs: Long = 0L): Bitmap? = withContext(Dispatchers.IO) {
+    suspend fun extractVideoFrame(
+        uriString: String,
+        timeMs: Long = 0L,
+        context: Context? = null
+    ): Bitmap? = withContext(Dispatchers.IO) {
+        if (uriString.isBlank()) return@withContext null
         val retriever = MediaMetadataRetriever()
         try {
             val parsed = Uri.parse(uriString)
             val path = parsed.path
-            if (parsed.scheme == "file" && path != null && File(path).exists()) {
-                retriever.setDataSource(path)
-            } else {
-                return@withContext null
+            when {
+                parsed.scheme == "file" && path != null && File(path).exists() -> {
+                    retriever.setDataSource(path)
+                }
+                parsed.scheme == null && File(uriString).exists() -> {
+                    retriever.setDataSource(uriString)
+                }
+                context != null -> {
+                    retriever.setDataSource(context, parsed)
+                }
+                else -> {
+                    return@withContext null
+                }
             }
-            retriever.getFrameAtTime(timeMs.coerceAtLeast(0L) * 1000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            retriever.getFrameAtTime(
+                timeMs.coerceAtLeast(0L) * 1000L,
+                MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+            ) ?: retriever.frameAtTime
         } catch (_: Throwable) {
             null
         } finally {

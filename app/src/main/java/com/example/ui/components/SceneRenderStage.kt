@@ -30,6 +30,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.example.data.SceneBitmapRenderer
+import com.example.gl.GlLayerRenderStage
 import com.example.gl.GlRenderStage
 import com.example.model.EditorLayer
 import com.example.model.LayerEffectType
@@ -105,6 +106,7 @@ fun SceneRenderStage(
     clipVolume: Float = 1f,
     speedMultiplier: Float = 1f,
     useLiveVideoPlayer: Boolean = true,
+    forceGlStage: Boolean = false,
     contentDescription: String = "Scene Preview",
     modifier: Modifier = Modifier,
     onVideoPositionChanged: (Long) -> Unit = {},
@@ -144,11 +146,9 @@ fun SceneRenderStage(
         isHardwareGlSupported &&
         !scene.isMultiLayerComposite &&
         !scene.isReversed &&
-        scene.colorGrading.isNeutral &&
         !scene.timing.freezeFrameEnabled &&
         scene.transitionToNext == null &&
-        scene.clip != null &&
-        activePasses.isNotEmpty()
+        (forceGlStage || (scene.clip != null && activePasses.isNotEmpty()))
 
     if (canUseGlStage) {
         Box(
@@ -271,7 +271,7 @@ fun SceneRenderStage(
 
             val tilePass = activePasses.firstOrNull { it.effectId == "tile_grid" && it.evaluateIntensityAt(localProgress) > 0.1f }
             if (tilePass != null) {
-                val gridSize = tilePass.param("grid_size", 2f).roundToInt().coerceIn(2, 4)
+                val gridSize = tilePass.evaluateParamAt("grid_size", localProgress, 2f, 2f, 4f).roundToInt().coerceIn(2, 4)
                 TileGridContent(
                     gridSize = gridSize,
                     clip = clip,
@@ -303,25 +303,29 @@ fun SceneRenderStage(
                     )
                 }
 
-                MediaClipStageContent(
-                    clip = clip,
-                    isPlaying = isPlaying && !scene.isReversed && !scene.timing.freezeFrameEnabled,
-                    positionMs = absSeekMs,
-                    isMuted = clipVolume <= 0.01f,
-                    volume = clipVolume,
-                    playbackSpeed = curveSpeed,
-                    isFitMode = activeTransform.isFitMode,
-                    useLiveVideoPlayer = useLiveVideoPlayer && !scene.isReversed && !scene.timing.freezeFrameEnabled,
-                    contentDescription = contentDescription,
-                    colorFilter = colorFilter,
-                    colorMatrixArray = gradingMatrix,
-                    onPositionChanged = { absPos ->
-                        val startOffset = if (clip is MediaClip.Video) clip.startTrimMs else 0L
-                        onVideoPositionChanged((absPos - startOffset).coerceAtLeast(0L))
-                    },
-                    onPlaybackEnded = onScenePlaybackEnded,
-                    modifier = stageContentModifier
-                )
+                if (clip == null && forceGlStage) {
+                    ProceduralCalibrationGridBox(modifier = stageContentModifier)
+                } else {
+                    MediaClipStageContent(
+                        clip = clip,
+                        isPlaying = isPlaying && !scene.isReversed && !scene.timing.freezeFrameEnabled,
+                        positionMs = absSeekMs,
+                        isMuted = clipVolume <= 0.01f,
+                        volume = clipVolume,
+                        playbackSpeed = curveSpeed,
+                        isFitMode = activeTransform.isFitMode,
+                        useLiveVideoPlayer = useLiveVideoPlayer && !scene.isReversed && !scene.timing.freezeFrameEnabled,
+                        contentDescription = contentDescription,
+                        colorFilter = colorFilter,
+                        colorMatrixArray = gradingMatrix,
+                        onPositionChanged = { absPos ->
+                            val startOffset = if (clip is MediaClip.Video) clip.startTrimMs else 0L
+                            onVideoPositionChanged((absPos - startOffset).coerceAtLeast(0L))
+                        },
+                        onPlaybackEnded = onScenePlaybackEnded,
+                        modifier = stageContentModifier
+                    )
+                }
             }
         }
 
@@ -382,10 +386,18 @@ private fun MultiLayerCompositeContent(
     isMuted: Boolean,
     modifier: Modifier = Modifier
 ) {
+    val isHardwareGlSupported = !LocalInspectionMode.current &&
+        !Build.FINGERPRINT.contains("robolectric", ignoreCase = true)
+
     Box(modifier = modifier) {
         layers.forEach { layer ->
             val interpolated = interpolateLayerAt(layer, progress)
             if (interpolated.layerMediaType != LayerMediaType.NONE || interpolated.effectiveText.isNotBlank()) {
+                val activeLayerPasses = interpolated.effectPasses.filter { it.isEnabled && it.effectId != "none" }
+                val useLayerGl = activeLayerPasses.isNotEmpty() &&
+                    isHardwareGlSupported &&
+                    (interpolated.mediaClip != null || interpolated.backgroundColorArgb != null)
+
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -406,53 +418,54 @@ private fun MultiLayerCompositeContent(
                             alpha = interpolated.opacity
                         }
                 ) {
-                    if (interpolated.backgroundColorArgb != null) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(Color(interpolated.backgroundColorArgb.toInt()))
-                        )
-                    }
-                    if (interpolated.mediaClip != null) {
-                        val tintFilter = if (interpolated.tintColor != Color.Transparent) {
-                            ColorFilter.tint(interpolated.tintColor.copy(alpha = 0.45f), BlendMode.SrcAtop)
-                        } else null
-                        MediaClipStageContent(
-                            clip = interpolated.mediaClip,
+                    if (useLayerGl) {
+                        GlLayerRenderStage(
+                            layer = interpolated,
+                            progress = progress,
                             isPlaying = isPlaying,
-                            positionMs = (progress * interpolated.mediaClip.effectiveDurationMs).toLong(),
                             isMuted = isMuted,
-                            useLiveVideoPlayer = false,
-                            contentDescription = "Layer ${interpolated.number}",
-                            colorFilter = tintFilter,
                             modifier = Modifier.fillMaxSize()
                         )
-                    }
-                    val layerShaderPass = interpolated.effectPasses.firstOrNull { it.effectId != "none" }
-                    if (layerShaderPass != null) {
-                        val tintFilter = buildSceneColorFilter(listOf(layerShaderPass), progress)
-                        if (tintFilter != null) {
+                    } else {
+                        if (interpolated.backgroundColorArgb != null) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .background(Color.White.copy(alpha = 0.08f * layerShaderPass.evaluateIntensityAt(progress)))
+                                    .background(Color(interpolated.backgroundColorArgb.toInt()))
                             )
                         }
-                        DrawForegroundEffectOverlays(
-                            activePasses = listOf(layerShaderPass),
-                            transition = null,
-                            progress = progress,
-                            transitionFactor = 0f
-                        )
-                    } else if (interpolated.effect != LayerEffectType.NONE) {
-                        val overlayColor = when (interpolated.effect) {
-                            LayerEffectType.NEON_GLOW -> Color(0x33FF2A85)
-                            LayerEffectType.RGB_SPLIT -> Color(0x2800E5FF)
-                            LayerEffectType.DREAM_BLUR -> Color(0x2AFFFFFF)
-                            LayerEffectType.VINTAGE_PULSE -> Color(0x33FFA000)
-                            LayerEffectType.NONE -> Color.Transparent
+                        if (interpolated.mediaClip != null) {
+                            val tintFilter = if (interpolated.tintColor != Color.Transparent) {
+                                ColorFilter.tint(interpolated.tintColor.copy(alpha = 0.45f), BlendMode.SrcAtop)
+                            } else null
+                            MediaClipStageContent(
+                                clip = interpolated.mediaClip,
+                                isPlaying = isPlaying,
+                                positionMs = (progress * interpolated.mediaClip.effectiveDurationMs).toLong(),
+                                isMuted = isMuted,
+                                useLiveVideoPlayer = false,
+                                contentDescription = "Layer ${interpolated.number}",
+                                colorFilter = tintFilter,
+                                modifier = Modifier.fillMaxSize()
+                            )
                         }
-                        Box(modifier = Modifier.fillMaxSize().background(overlayColor))
+                        if (activeLayerPasses.isNotEmpty()) {
+                            DrawForegroundEffectOverlays(
+                                activePasses = activeLayerPasses,
+                                transition = null,
+                                progress = progress,
+                                transitionFactor = 0f
+                            )
+                        } else if (interpolated.effect != LayerEffectType.NONE) {
+                            val overlayColor = when (interpolated.effect) {
+                                LayerEffectType.NEON_GLOW -> Color(0x33FF2A85)
+                                LayerEffectType.RGB_SPLIT -> Color(0x2800E5FF)
+                                LayerEffectType.DREAM_BLUR -> Color(0x2AFFFFFF)
+                                LayerEffectType.VINTAGE_PULSE -> Color(0x33FFA000)
+                                LayerEffectType.NONE -> Color.Transparent
+                            }
+                            Box(modifier = Modifier.fillMaxSize().background(overlayColor))
+                        }
                     }
                     if (interpolated.effectiveText.isNotBlank()) {
                         RichLayerTextOverlay(layer = interpolated)
@@ -750,8 +763,8 @@ private fun buildSceneColorFilter(
                 m.setToRotateRed(k * 180f); true
             }
             "color_adjust" -> {
-                val sat = 0.5f + fx.param("saturation", 0.7f) * 1.2f * k
-                val bright = 0.7f + fx.param("brightness", 0.55f) * 0.7f
+                val sat = 0.5f + fx.evaluateParamAt("saturation", progress, 0.7f, 0f, 1f) * 1.2f * k
+                val bright = 0.7f + fx.evaluateParamAt("brightness", progress, 0.55f, 0f, 1f) * 0.7f
                 m.setToSaturation(sat)
                 val sc = ColorMatrix().apply { setToScale(bright, bright, bright, 1f) }
                 m.timesAssign(sc)
@@ -779,3 +792,45 @@ private fun buildSceneColorFilter(
     }
     return if (modified) ColorFilter.colorMatrix(matrix) else null
 }
+
+@Composable
+private fun ProceduralCalibrationGridBox(modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val barColors = listOf(
+            Color(0xFFEAEAF0),
+            Color(0xFFFFD54F),
+            Color(0xFF26C6DA),
+            Color(0xFF66BB6A),
+            Color(0xFFD92B7F),
+            Color(0xFFEF5350),
+            Color(0xFF42A5F5)
+        )
+        val barW = size.width / barColors.size
+        val topH = size.height * 0.68f
+        barColors.forEachIndexed { idx, col ->
+            drawRect(
+                color = col.copy(alpha = 0.85f),
+                topLeft = Offset(idx * barW, 0f),
+                size = Size(barW + 1f, topH)
+            )
+        }
+        drawRect(
+            brush = Brush.linearGradient(
+                colors = listOf(Color(0xFFB81D6F), Color(0xFF2E7D32), Color(0xFF1565C0))
+            ),
+            topLeft = Offset(0f, topH),
+            size = Size(size.width, size.height - topH)
+        )
+        val cols = 8
+        val rows = 8
+        for (i in 1 until cols) {
+            val x = (size.width / cols) * i
+            drawLine(Color.White.copy(alpha = 0.3f), Offset(x, 0f), Offset(x, size.height), strokeWidth = 1.dp.toPx())
+        }
+        for (j in 1 until rows) {
+            val y = (size.height / rows) * j
+            drawLine(Color.White.copy(alpha = 0.3f), Offset(0f, y), Offset(size.width, y), strokeWidth = 1.dp.toPx())
+        }
+    }
+}
+

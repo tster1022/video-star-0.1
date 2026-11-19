@@ -35,8 +35,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -73,6 +71,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.model.AspectRatioMode
 import com.example.model.VelocityPoint
+import com.example.ui.components.IosThinSlider
 import com.example.ui.components.MediaClipStageContent
 import com.example.ui.components.SceneRenderStage
 import com.example.ui.components.geometricTriangleBackground
@@ -206,59 +205,59 @@ fun VelocityScreen(
                         }
                     }
 
-                    // Semi-Transparent Scrubber Bar with Play, White Thumb, and Live Speed Readout
+                    // Semi-Hidden Frosted Scrubber Bar with Play, Hairline Thumb, and Live Speed Readout
                     Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = ClassicPlayerOverlay,
+                        shape = RoundedCornerShape(11.dp),
+                        color = Color(0xFF101015).copy(alpha = 0.28f),
+                        border = BorderStroke(0.6.dp, Color.White.copy(alpha = 0.16f)),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(44.dp)
-                                .padding(horizontal = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                                .height(36.dp)
+                                .padding(horizontal = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             IconButton(
                                 onClick = viewModel::togglePlayback,
                                 modifier = Modifier
-                                    .size(38.dp)
+                                    .size(34.dp)
                                     .testTag("velocity_play_button")
                             ) {
                                 Icon(
                                     imageVector = if (uiState.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                                     contentDescription = "Play/Pause",
                                     tint = ClassicGreen,
-                                    modifier = Modifier.size(24.dp)
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
 
-                            Slider(
+                            IosThinSlider(
                                 value = uiState.currentProgress,
                                 onValueChange = viewModel::scrubTo,
-                                colors = SliderDefaults.colors(
-                                    thumbColor = VideoStarWhite,
-                                    activeTrackColor = ClassicGreen,
-                                    inactiveTrackColor = VideoStarWhite.copy(alpha = 0.55f)
-                                ),
+                                activeTrackColor = ClassicGreen,
+                                inactiveTrackColor = VideoStarWhite.copy(alpha = 0.24f),
+                                thumbSize = 11.dp,
+                                trackHeight = 2.dp,
                                 modifier = Modifier
                                     .weight(1f)
-                                    .height(28.dp)
                                     .testTag("velocity_scrubber_slider")
                             )
 
                             Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = VideoStarWhite,
-                                modifier = Modifier.padding(start = 6.dp)
+                                shape = RoundedCornerShape(7.dp),
+                                color = VideoStarWhite.copy(alpha = 0.90f),
+                                modifier = Modifier.padding(start = 4.dp)
                             ) {
                                 Text(
                                     text = String.format(Locale.US, "%.2fx", uiState.instantSpeed),
                                     color = if (uiState.instantSpeed >= 1.0f) ClassicGreen else ClassicRed,
-                                    fontSize = 12.sp,
+                                    fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier
-                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                        .padding(horizontal = 7.dp, vertical = 3.dp)
                                         .testTag("velocity_instant_speed_text")
                                 )
                             }

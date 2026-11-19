@@ -79,7 +79,8 @@ data class ReEffectRoute(val projectId: String, val sceneIndices: List<Int> = li
 data class EffectsStudioRoute(
     val projectId: String,
     val sceneIndices: List<Int> = listOf(0),
-    val targetLayerId: String? = null
+    val targetLayerId: String? = null,
+    val isDarkTheme: Boolean = false
 )
 
 @Serializable
@@ -102,7 +103,9 @@ fun VideoStarNavHost(
 ) {
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route ?: ""
-    val isDarkEditor = currentRoute.contains("MultiLayerRoute")
+    val isEffectsDark = currentRoute.contains("EffectsStudioRoute") &&
+        runCatching { backStackEntry?.toRoute<EffectsStudioRoute>()?.isDarkTheme == true }.getOrDefault(false)
+    val isDarkEditor = currentRoute.contains("MultiLayerRoute") || isEffectsDark
 
     LaunchedEffect(isDarkEditor) {
         onDarkModeChanged(isDarkEditor)
@@ -278,7 +281,13 @@ fun VideoStarNavHost(
                         navController.navigate(KeyframeRoute(projectId = projectId, layerId = layerId))
                     },
                     onOpenLayerEffectsStudio = { projectId, layerId ->
-                        navController.navigate(EffectsStudioRoute(projectId = projectId, targetLayerId = layerId))
+                        navController.navigate(
+                            EffectsStudioRoute(
+                                projectId = projectId,
+                                targetLayerId = layerId,
+                                isDarkTheme = false
+                            )
+                        )
                     },
                     onOpenAdjustVideoForLayer = { projectId, mediaUri, durationMs, sourceFps, layerIdx ->
                         navController.navigate(
@@ -377,6 +386,7 @@ fun VideoStarNavHost(
                     projectId = route.projectId,
                     sceneIndices = route.sceneIndices,
                     targetLayerId = route.targetLayerId,
+                    isDarkTheme = route.isDarkTheme,
                     onCancel = { navController.popBackStack() },
                     onCreated = { navController.popBackStack() }
                 )
@@ -440,7 +450,13 @@ fun VideoStarNavHost(
                         )
                     },
                     onOpenLayerEffectsStudio = { projectId, layerId ->
-                        navController.navigate(EffectsStudioRoute(projectId = projectId, targetLayerId = layerId))
+                        navController.navigate(
+                            EffectsStudioRoute(
+                                projectId = projectId,
+                                targetLayerId = layerId,
+                                isDarkTheme = true
+                            )
+                        )
                     },
                     onSwitchToLightTheme = {
                         navController.navigate(LayersRoute(projectId = route.projectId)) {

@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -318,8 +317,10 @@ fun NewProjectModalSection(
                         Box(
                             modifier = Modifier
                                 .align(Alignment.CenterStart)
-                                .size(36.dp)
-                                .clip(CircleShape)
+                                .size(34.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(VideoStarLightSurface)
+                                .border(0.8.dp, VideoStarIosPink.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
                                 .clickable { showFormatInfo = true }
                                 .testTag("video_format_info_button"),
                             contentAlignment = Alignment.Center
@@ -552,6 +553,7 @@ fun NewProjectModalSection(
             confirmButton = {
                 Button(
                     onClick = onCloseCompressionSheet,
+                    shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = VideoStarMagenta)
                 ) {
                     Text(stringResource(R.string.btn_close), fontFamily = CairoFontFamily)
@@ -637,6 +639,7 @@ fun NewProjectModalSection(
             confirmButton = {
                 Button(
                     onClick = { showPresetsSheet = false },
+                    shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = VideoStarMagenta)
                 ) {
                     Text(stringResource(R.string.btn_close), fontFamily = CairoFontFamily)
@@ -669,6 +672,7 @@ fun NewProjectModalSection(
             confirmButton = {
                 Button(
                     onClick = { showFormatInfo = false },
+                    shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = VideoStarMagenta)
                 ) {
                     Text(stringResource(R.string.btn_close), fontFamily = CairoFontFamily)
@@ -708,7 +712,7 @@ private fun NewProjectQuickControlsRow(
                         .align(Alignment.BottomEnd)
                         .offset(x = 2.dp, y = 1.dp)
                         .size(12.dp)
-                        .clip(CircleShape)
+                        .clip(RoundedCornerShape(4.dp))
                         .background(VideoStarLightSurface),
                     contentAlignment = Alignment.Center
                 ) {
@@ -741,15 +745,15 @@ private fun NewProjectTopBarAboveModal(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            // Pill button: افتراضي
+            // Rounded rectangle button: افتراضي
             Box(
                 modifier = Modifier
                     .height(32.dp)
-                    .clip(RoundedCornerShape(16.dp))
+                    .clip(RoundedCornerShape(8.dp))
                     .background(VideoStarLightSurface)
-                    .border(1.2.dp, VideoStarIosPink, RoundedCornerShape(16.dp))
+                    .border(1.2.dp, VideoStarIosPink, RoundedCornerShape(8.dp))
                     .clickable(onClick = onDefaultClick)
-                    .padding(horizontal = 18.dp)
+                    .padding(horizontal = 14.dp)
                     .testTag("new_project_default_button"),
                 contentAlignment = Alignment.Center
             ) {

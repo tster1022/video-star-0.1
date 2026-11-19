@@ -153,7 +153,10 @@ fun EffectAnimatedSampleCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     sceneThumbnail: ImageBitmap? = null,
-    testTag: String = ""
+    testTag: String = "",
+    selectedAccentColor: Color = ClassicGreen,
+    labelColor: Color = Color(0xFF222222),
+    clickable: Boolean = true
 ) {
     val transition = rememberInfiniteTransition(label = "effect_sample_${label}")
     val t by transition.animateFloat(
@@ -173,7 +176,7 @@ fun EffectAnimatedSampleCard(
         modifier = modifier
             .width(76.dp)
             .height(92.dp)
-            .iosPressable(onClick = onClick)
+            .then(if (clickable) Modifier.iosPressable(onClick = onClick) else Modifier)
             .then(if (testTag.isNotEmpty()) Modifier.testTag(testTag) else Modifier)
     ) {
         Box(
@@ -183,7 +186,7 @@ fun EffectAnimatedSampleCard(
                 .background(Color(0xFF14141A))
                 .border(
                     width = if (isSelected) 2.dp else 1.dp,
-                    color = if (isSelected) ClassicGreen else IosHairlineGray,
+                    color = if (isSelected) selectedAccentColor else IosHairlineGray,
                     shape = RoundedCornerShape(10.dp)
                 ),
             contentAlignment = Alignment.Center
@@ -203,7 +206,7 @@ fun EffectAnimatedSampleCard(
             fontFamily = SfProTextFontFamily,
             fontSize = 11.sp,
             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-            color = if (isSelected) ClassicGreen else Color(0xFF222222),
+            color = if (isSelected) selectedAccentColor else labelColor,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
