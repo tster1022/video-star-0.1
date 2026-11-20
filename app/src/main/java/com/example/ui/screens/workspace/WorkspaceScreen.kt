@@ -388,12 +388,12 @@ fun WorkspaceScreen(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 4.dp),
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     val ratioModifier = when (project.aspectRatio) {
                         AspectRatioMode.SQUARE -> Modifier
-                            .fillMaxWidth(if (isLandscapeOrWide) 0.55f else 0.92f)
+                            .fillMaxWidth(if (isLandscapeOrWide) 0.55f else 0.98f)
                             .aspectRatio(1f)
                         AspectRatioMode.PORTRAIT -> Modifier
                             .fillMaxHeight(0.95f)
@@ -405,10 +405,10 @@ fun WorkspaceScreen(
                             .fillMaxHeight(0.92f)
                             .aspectRatio(4f / 5f, matchHeightConstraintsFirst = true)
                         AspectRatioMode.LANDSCAPE_4_3 -> Modifier
-                            .fillMaxWidth(0.94f)
+                            .fillMaxWidth(1f)
                             .aspectRatio(4f / 3f)
                         AspectRatioMode.LANDSCAPE -> Modifier
-                            .fillMaxWidth(0.96f)
+                            .fillMaxWidth(1f)
                             .aspectRatio(16f / 9f)
                     }
 
