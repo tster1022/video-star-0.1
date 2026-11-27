@@ -139,7 +139,27 @@ class SharedProjectViewModel : ViewModel() {
     }
 
     fun exportProjectVideo(context: Context, projectId: String) {
-        val project = VideoStarRepository.getProjectById(projectId) ?: return
+        val rawProject = VideoStarRepository.getProjectById(projectId) ?: return
+        val project = if (rawProject.scenes.isEmpty() && rawProject.aeLayers.isNotEmpty()) {
+            val visibleLayers = rawProject.aeLayers.filter { it.isVisible }
+            val fallbackClip = visibleLayers.firstOrNull { it.mediaClip != null }?.mediaClip
+            val compositeScene = TimelineScene(
+                id = "ae_export_${rawProject.id}",
+                title = rawProject.title,
+                durationMs = rawProject.totalTimelineDurationMs.coerceAtLeast(1_000L),
+                clip = fallbackClip,
+                mediaUriString = fallbackClip?.uriString,
+                isVideo = fallbackClip is MediaClip.Video,
+                isMultiLayerComposite = true,
+                layers = visibleLayers
+            )
+            rawProject.copy(
+                scenes = listOf(compositeScene),
+                durationMs = compositeScene.effectiveDurationMs
+            )
+        } else {
+            rawProject
+        }
         if (project.scenes.isEmpty()) {
             _importError.value = "أضف مشهداً واحداً على الأقل قبل التصدير"
             return

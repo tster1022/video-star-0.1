@@ -29,6 +29,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import com.example.model.BezierCurveSpec
 import com.example.model.EffectBlendMode
 import com.example.model.EffectCatalogItem
 import com.example.model.EffectStudioTab
@@ -58,11 +59,15 @@ fun EffectsStudioBottomSheet(
     onUpdateSearchQuery: (String) -> Unit,
     onIntensityChange: (Float) -> Unit,
     onPassParamChange: (String, Float) -> Unit,
+    onPassPoint2DChange: (String, String, Float, Float) -> Unit = { _, _, _, _ -> },
+    onPassColorChange: (String, Long) -> Unit = { _, _ -> },
+    onPassTextChange: (String, String) -> Unit = { _, _ -> },
     onBlendModeChange: (EffectBlendMode) -> Unit,
     onOpacityChange: (Float) -> Unit,
     onFocusKeyframeProperty: (String) -> Unit,
     onTogglePropertyKeyframe: (String) -> Unit,
     onUpdatePropertyEasing: (String, KeyframeEasing) -> Unit,
+    onUpdatePropertyCustomBezier: (String, BezierCurveSpec) -> Unit = { _, _ -> },
     onJumpPrevKeyframe: (String) -> Unit,
     onJumpNextKeyframe: (String) -> Unit,
     onClearPropertyKeyframes: (String) -> Unit,
@@ -158,11 +163,15 @@ fun EffectsStudioBottomSheet(
                             onBackToStack = onBackToStack,
                             onIntensityChange = onIntensityChange,
                             onPassParamChange = onPassParamChange,
+                            onPassPoint2DChange = onPassPoint2DChange,
+                            onPassColorChange = onPassColorChange,
+                            onPassTextChange = onPassTextChange,
                             onBlendModeChange = onBlendModeChange,
                             onOpacityChange = onOpacityChange,
                             onFocusKeyframeProperty = onFocusKeyframeProperty,
                             onTogglePropertyKeyframe = onTogglePropertyKeyframe,
                             onUpdatePropertyEasing = onUpdatePropertyEasing,
+                            onUpdatePropertyCustomBezier = onUpdatePropertyCustomBezier,
                             onJumpPrevKeyframe = onJumpPrevKeyframe,
                             onJumpNextKeyframe = onJumpNextKeyframe,
                             onClearPropertyKeyframes = onClearPropertyKeyframes,

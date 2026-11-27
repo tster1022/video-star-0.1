@@ -2,14 +2,19 @@ package com.example.data
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.media.MediaMuxer
 import android.net.Uri
+import android.util.LruCache
 import android.webkit.MimeTypeMap
+import com.example.engine.render.StudioRenderMemoryCoordinator
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.nio.ByteBuffer
@@ -29,6 +34,114 @@ data class ImportedAudioInfo(
 )
 
 object MediaImportHelper {
+
+    private val videoFrameSemaphore = Semaphore(2)
+    private val videoFrameCacheLock = Any()
+    private val videoFrameCache = object : LruCache<String, Bitmap>(
+        StudioRenderMemoryCoordinator.MAX_VIDEO_FRAME_CACHE_KB
+    ) {
+        override fun sizeOf(key: String, value: Bitmap): Int {
+            if (value.isRecycled) return 1
+            return StudioRenderMemoryCoordinator.bitmapSizeKb(value.allocationByteCount)
+        }
+    }
+
+    init {
+        StudioRenderMemoryCoordinator.registerTrimListener("media_video_frame_cache") { aggressive ->
+            trimFrameCache(
+                maxTargetKb = if (aggressive) 0 else StudioRenderMemoryCoordinator.MAX_VIDEO_FRAME_CACHE_KB / 4
+            )
+        }
+    }
+
+    fun trimFrameCache(maxTargetKb: Int = 0) {
+        synchronized(videoFrameCacheLock) {
+            val safeTarget = maxTargetKb.coerceAtLeast(0)
+            if (safeTarget == 0) {
+                videoFrameCache.evictAll()
+            } else {
+                videoFrameCache.trimToSize(safeTarget)
+            }
+        }
+    }
+
+    fun cachedFrameMemoryKb(): Int = synchronized(videoFrameCacheLock) { videoFrameCache.size() }
+
+    fun calculateInSampleSize(rawWidth: Int, rawHeight: Int, maxDimPx: Int): Int {
+        val safeMax = maxDimPx.coerceAtLeast(64)
+        var inSampleSize = 1
+        if (rawHeight > safeMax || rawWidth > safeMax) {
+            var halfHeight = rawHeight / 2
+            var halfWidth = rawWidth / 2
+            while ((halfHeight / inSampleSize) >= safeMax && (halfWidth / inSampleSize) >= safeMax) {
+                inSampleSize *= 2
+            }
+            while ((rawHeight / inSampleSize) > safeMax * 2 || (rawWidth / inSampleSize) > safeMax * 2) {
+                inSampleSize *= 2
+            }
+        }
+        return inSampleSize.coerceAtLeast(1)
+    }
+
+    fun decodeSampledBitmap(
+        uriString: String,
+        context: Context? = null,
+        maxDimPx: Int = 1080
+    ): Bitmap? {
+        if (uriString.isBlank()) return null
+        val parsed = Uri.parse(uriString)
+        val filePath = parsed.path?.takeIf {
+            (parsed.scheme == "file" || parsed.scheme == null) && File(it).exists()
+        }
+
+        val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        runCatching {
+            if (filePath != null) {
+                BitmapFactory.decodeFile(filePath, boundsOpts)
+            } else if (context != null) {
+                context.contentResolver.openInputStream(parsed)?.use { input ->
+                    BitmapFactory.decodeStream(input, null, boundsOpts)
+                }
+            }
+        }
+
+        val rawW = boundsOpts.outWidth
+        val rawH = boundsOpts.outHeight
+        val sample = if (rawW > 0 && rawH > 0) {
+            calculateInSampleSize(rawW, rawH, maxDimPx)
+        } else {
+            1
+        }
+
+        val decodeOpts = BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+
+        val decoded = runCatching {
+            if (filePath != null) {
+                BitmapFactory.decodeFile(filePath, decodeOpts)
+            } else if (context != null) {
+                context.contentResolver.openInputStream(parsed)?.use { input ->
+                    BitmapFactory.decodeStream(input, null, decodeOpts)
+                }
+            } else {
+                null
+            }
+        }.getOrNull() ?: return null
+
+        val maxSide = maxOf(decoded.width, decoded.height)
+        if (maxSide <= maxDimPx) return decoded
+
+        val scale = maxDimPx.toFloat() / maxSide.toFloat()
+        val targetW = (decoded.width * scale).toInt().coerceAtLeast(1)
+        val targetH = (decoded.height * scale).toInt().coerceAtLeast(1)
+        val scaled = Bitmap.createScaledBitmap(decoded, targetW, targetH, true)
+        if (scaled !== decoded && !decoded.isRecycled) {
+            decoded.recycle()
+        }
+        return scaled
+    }
 
     fun isVideoUri(context: Context, uri: Uri): Boolean {
         val mime = context.contentResolver.getType(uri)?.lowercase()
@@ -253,35 +366,68 @@ object MediaImportHelper {
     suspend fun extractVideoFrame(
         uriString: String,
         timeMs: Long = 0L,
-        context: Context? = null
+        context: Context? = null,
+        maxDimPx: Int = 720
     ): Bitmap? = withContext(Dispatchers.IO) {
         if (uriString.isBlank()) return@withContext null
-        val retriever = MediaMetadataRetriever()
-        try {
-            val parsed = Uri.parse(uriString)
-            val path = parsed.path
-            when {
-                parsed.scheme == "file" && path != null && File(path).exists() -> {
-                    retriever.setDataSource(path)
-                }
-                parsed.scheme == null && File(uriString).exists() -> {
-                    retriever.setDataSource(uriString)
-                }
-                context != null -> {
-                    retriever.setDataSource(context, parsed)
-                }
-                else -> {
-                    return@withContext null
-                }
+        val bucketMs = (timeMs.coerceAtLeast(0L) / 150L) * 150L
+        val safeMaxDim = maxDimPx.coerceIn(64, 960)
+        val cacheKey = "$uriString|$bucketMs|$safeMaxDim"
+        synchronized(videoFrameCacheLock) {
+            videoFrameCache.get(cacheKey)?.takeIf { !it.isRecycled }?.let { return@withContext it }
+        }
+
+        videoFrameSemaphore.withPermit {
+            synchronized(videoFrameCacheLock) {
+                videoFrameCache.get(cacheKey)?.takeIf { !it.isRecycled }?.let { return@withPermit it }
             }
-            retriever.getFrameAtTime(
-                timeMs.coerceAtLeast(0L) * 1000L,
-                MediaMetadataRetriever.OPTION_CLOSEST_SYNC
-            ) ?: retriever.frameAtTime
-        } catch (_: Throwable) {
-            null
-        } finally {
-            runCatching { retriever.release() }
+            val retriever = MediaMetadataRetriever()
+            try {
+                val parsed = Uri.parse(uriString)
+                val path = parsed.path
+                when {
+                    parsed.scheme == "file" && path != null && File(path).exists() -> {
+                        retriever.setDataSource(path)
+                    }
+                    parsed.scheme == null && File(uriString).exists() -> {
+                        retriever.setDataSource(uriString)
+                    }
+                    context != null -> {
+                        retriever.setDataSource(context, parsed)
+                    }
+                    else -> {
+                        return@withPermit null
+                    }
+                }
+                val raw = retriever.getFrameAtTime(
+                    bucketMs * 1000L,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                ) ?: retriever.frameAtTime ?: return@withPermit null
+
+                val maxSide = maxOf(raw.width, raw.height)
+                val finalBmp = if (maxSide > safeMaxDim && maxSide > 0) {
+                    val scale = safeMaxDim.toFloat() / maxSide.toFloat()
+                    val dstW = (raw.width * scale).toInt().coerceAtLeast(1)
+                    val dstH = (raw.height * scale).toInt().coerceAtLeast(1)
+                    val scaled = Bitmap.createScaledBitmap(raw, dstW, dstH, true)
+                    if (scaled !== raw && !raw.isRecycled) {
+                        raw.recycle()
+                    }
+                    scaled
+                } else {
+                    raw
+                }
+                if (!finalBmp.isRecycled) {
+                    synchronized(videoFrameCacheLock) {
+                        videoFrameCache.put(cacheKey, finalBmp)
+                    }
+                }
+                finalBmp
+            } catch (_: Throwable) {
+                null
+            } finally {
+                runCatching { retriever.release() }
+            }
         }
     }
 

@@ -190,11 +190,14 @@ fun Modifier.applyLayerMask(layer: EditorLayer): Modifier {
     }
 }
 
-fun textFontForStyleId(styleId: String): Pair<FontFamily, FontWeight> = when (styleId) {
-    "sf_display" -> SfProTextFontFamily to FontWeight.SemiBold
-    "arabic_naskh" -> FontFamily.Serif to FontWeight.Bold
-    "mono_arcade" -> FontFamily.Monospace to FontWeight.Bold
-    else -> SfProDisplayFontFamily to FontWeight.ExtraBold
+fun textFontForStyleId(styleId: String): Pair<FontFamily, FontWeight> {
+    com.example.engine.packs.CustomFontRegistry.resolveComposeFont(styleId)?.let { return it }
+    return when (styleId) {
+        "sf_display" -> SfProTextFontFamily to FontWeight.SemiBold
+        "arabic_naskh" -> FontFamily.Serif to FontWeight.Bold
+        "mono_arcade" -> FontFamily.Monospace to FontWeight.Bold
+        else -> SfProDisplayFontFamily to FontWeight.ExtraBold
+    }
 }
 
 @Composable

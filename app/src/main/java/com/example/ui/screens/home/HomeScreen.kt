@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -57,6 +58,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -64,11 +67,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
@@ -85,6 +92,7 @@ import com.example.R
 import com.example.model.AspectRatioMode
 import com.example.model.MediaClip
 import com.example.model.ShareTarget
+import com.example.model.StudioLayoutMode
 import com.example.model.VideoProject
 import com.example.ui.components.AudioLibraryDialog
 import com.example.ui.components.DeleteProjectDialog
@@ -96,6 +104,10 @@ import com.example.ui.components.SettingsDialog
 import com.example.ui.components.StarStudioLogo
 import com.example.ui.components.VideoStarPopover
 import com.example.ui.components.geometricTriangleBackground
+import com.example.ui.screens.workspace.BlueprintLayoutTransitionHost
+import com.example.ui.screens.workspace.BlueprintTransitionRequest
+import com.example.ui.screens.workspace.LayoutSwitcherPillButton
+import com.example.ui.screens.workspace.StudioLayoutSelectorModal
 import com.example.ui.theme.CairoFontFamily
 import com.example.ui.theme.LocalVideoStarColors
 import com.example.ui.theme.VideoStarBadgeRed
@@ -122,6 +134,11 @@ fun HomeScreen(
     val extraColors = LocalVideoStarColors.current
     val snackbarHostState = remember { SnackbarHostState() }
     var shareAnchorBounds by remember { mutableStateOf<Rect?>(null) }
+    var rootOffsetInRoot by remember { mutableStateOf(Offset.Zero) }
+    var activeCardBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
+    var transitionRequest by remember { mutableStateOf<BlueprintTransitionRequest?>(null) }
+    var transitionSeq by remember { mutableLongStateOf(0L) }
+    var chromeAlpha by remember { mutableFloatStateOf(1f) }
     val context = LocalContext.current
 
     // Local audio file picker ("حدد الأغنية"): extracts real duration & navigates to Screen 2
@@ -162,17 +179,22 @@ fun HomeScreen(
         modifier = Modifier
             .fillMaxSize()
             .geometricTriangleBackground()
+            .onGloballyPositioned { rootOffsetInRoot = it.positionInRoot() }
     ) {
         Scaffold(
             containerColor = Color.Transparent,
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
             snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
             topBar = {
                 HomeTopHeader(
+                    activeLayout = uiState.activeLayout,
                     isFavoritesFilterActive = uiState.showFavoritesOnly,
+                    onOpenLayoutModal = viewModel::openLayoutModal,
                     onFavoritesClick = viewModel::toggleFavoritesFilter,
                     onStoreClick = { viewModel.openDialog(HomeDialogState.StoreShowcase) },
                     onAudioLibraryClick = { viewModel.openDialog(HomeDialogState.AudioLibrary) },
-                    onCreateProjectClick = viewModel::openCreateProjectDialog
+                    onCreateProjectClick = viewModel::openCreateProjectDialog,
+                    modifier = Modifier.graphicsLayer { alpha = chromeAlpha }
                 )
             },
             bottomBar = {
@@ -180,7 +202,8 @@ fun HomeScreen(
                     onSearchClick = { viewModel.openDialog(HomeDialogState.SearchProjects) },
                     onSettingsClick = { viewModel.openDialog(HomeDialogState.Settings) },
                     onCloudClick = { viewModel.openDialog(HomeDialogState.CloudRestore) },
-                    onHelpClick = { viewModel.openDialog(HomeDialogState.Help) }
+                    onHelpClick = { viewModel.openDialog(HomeDialogState.Help) },
+                    modifier = Modifier.graphicsLayer { alpha = chromeAlpha }
                 )
             }
         ) { innerPadding ->
@@ -190,7 +213,7 @@ fun HomeScreen(
                     .padding(innerPadding)
             ) {
             val projects = uiState.visibleProjects
-            val maxCardSize = (maxWidth * 0.68f).coerceAtMost(320.dp)
+            val maxCardSize = (maxWidth * 0.74f).coerceAtMost(380.dp)
 
             if (projects.isEmpty()) {
                 EmptyProjectsState(
@@ -219,7 +242,6 @@ fun HomeScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .widthIn(max = 720.dp)
                             .align(Alignment.Center),
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally
@@ -249,6 +271,11 @@ fun HomeScreen(
                                         .widthIn(max = maxCardSize)
                                         .fillMaxWidth()
                                         .aspectRatio(1f)
+                                        .onGloballyPositioned { coords ->
+                                            if (isActive) {
+                                                activeCardBoundsInRoot = coords.boundsInRoot()
+                                            }
+                                        }
                                 )
                             }
                         }
@@ -257,6 +284,12 @@ fun HomeScreen(
 
                         val activeProject = uiState.currentProject
                         if (activeProject != null) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .graphicsLayer { alpha = chromeAlpha },
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
                             Text(
                                 text = activeProject.title,
                                 style = MaterialTheme.typography.titleLarge.copy(
@@ -316,12 +349,50 @@ fun HomeScreen(
                                     style = MaterialTheme.typography.labelLarge
                                 )
                             }
+                            }
                         }
                     }
                 }
             }
         }
+
+        // Dynamic Blueprint Wireframe Layout Switcher Transition on Home
+        BlueprintLayoutTransitionHost(
+            request = transitionRequest,
+            previewBoundsInRoot = activeCardBoundsInRoot,
+            rootOffsetInRoot = rootOffsetInRoot,
+            onCommitTargetLayout = { target ->
+                viewModel.selectHomeLayout(target)
+            },
+            onTransitionFinished = {
+                transitionRequest = null
+            },
+            onChromeAlphaChanged = { alpha ->
+                chromeAlpha = alpha
+            }
+        )
     }
+
+    // Dark "Layout" Modal Selector Sheet accessible directly from Home
+    StudioLayoutSelectorModal(
+        visible = uiState.isLayoutModalVisible,
+        activeLayout = uiState.activeLayout,
+        onSelectLayout = { targetLayout ->
+            viewModel.dismissLayoutModal()
+            val currentLayout = uiState.activeLayout
+            if (targetLayout != currentLayout) {
+                transitionSeq += 1L
+                transitionRequest = BlueprintTransitionRequest(
+                    id = transitionSeq,
+                    fromLayout = currentLayout,
+                    toLayout = targetLayout
+                )
+            } else {
+                viewModel.selectHomeLayout(targetLayout)
+            }
+        },
+        onDismiss = viewModel::dismissLayoutModal
+    )
 
     VideoStarPopover(
         expanded = uiState.isSharePopoverVisible,
@@ -532,19 +603,38 @@ fun HomeScreen(
  */
 @Composable
 private fun HomeTopHeader(
+    activeLayout: StudioLayoutMode,
     isFavoritesFilterActive: Boolean,
+    onOpenLayoutModal: () -> Unit,
     onFavoritesClick: () -> Unit,
     onStoreClick: () -> Unit,
     onAudioLibraryClick: () -> Unit,
-    onCreateProjectClick: () -> Unit
+    onCreateProjectClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .statusBarsPadding()
             .padding(top = 6.dp, bottom = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // Top-left Studio Layout Switcher Pill row cleanly above centered logo
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 2.dp)
+            ) {
+                LayoutSwitcherPillButton(
+                    activeLayout = activeLayout,
+                    onClick = onOpenLayoutModal,
+                    testTag = "home_layout_switcher_button",
+                    modifier = Modifier.align(Alignment.CenterStart)
+                )
+            }
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -672,11 +762,12 @@ private fun HomeBottomFooter(
     onSearchClick: () -> Unit,
     onSettingsClick: () -> Unit,
     onCloudClick: () -> Unit,
-    onHelpClick: () -> Unit
+    onHelpClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val extraColors = LocalVideoStarColors.current
     Column(
-        modifier = Modifier.fillMaxWidth()
+        modifier = modifier.fillMaxWidth()
     ) {
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
             Row(

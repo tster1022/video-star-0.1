@@ -26,15 +26,24 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.StarBorder
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -44,11 +53,13 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.engine.packs.CustomPackRepository
 import com.example.model.EffectCatalogItem
 import com.example.model.EffectStudioTab
 import com.example.model.arabicDisplayName
 import com.example.ui.components.EffectAnimatedSampleCard
 import com.example.ui.components.SampleCardKind
+import com.example.ui.screens.packs.PackImportStudioSheet
 import com.example.ui.theme.CairoFontFamily
 
 @Composable
@@ -64,6 +75,7 @@ internal fun EffectLibraryPanel(
     onUpdateSearchQuery: (String) -> Unit
 ) {
     val colorScheme = MaterialTheme.colorScheme
+    var showPackImporter by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -104,15 +116,42 @@ internal fun EffectLibraryPanel(
                 color = colorScheme.onSurface
             )
 
-            IconButton(
-                onClick = onToggleSearch,
-                modifier = Modifier.size(44.dp).testTag("reeffect_search_toggle")
-            ) {
-                Icon(
-                    imageVector = if (uiState.isSearchVisible) Icons.Rounded.Close else Icons.Outlined.Search,
-                    contentDescription = "بحث في المؤثرات",
-                    tint = colorScheme.primary
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    color = Color(0xFF23173D),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, Color(0xFFA855F7).copy(alpha = 0.7f)),
+                    modifier = Modifier
+                        .height(34.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { showPackImporter = true }
+                        .testTag("effects_library_import_packs_btn")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(Icons.Outlined.FolderOpen, contentDescription = "استيراد XML وملفات", tint = Color(0xFF00E676), modifier = Modifier.size(15.dp))
+                        Text(
+                            text = "XML/Packs",
+                            fontFamily = CairoFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 10.5.sp,
+                            color = Color.White
+                        )
+                    }
+                }
+                IconButton(
+                    onClick = onToggleSearch,
+                    modifier = Modifier.size(44.dp).testTag("reeffect_search_toggle")
+                ) {
+                    Icon(
+                        imageVector = if (uiState.isSearchVisible) Icons.Rounded.Close else Icons.Outlined.Search,
+                        contentDescription = "بحث في المؤثرات",
+                        tint = colorScheme.primary
+                    )
+                }
             }
         }
 
@@ -166,16 +205,17 @@ internal fun EffectLibraryPanel(
             }
 
             items(
-                items = EffectStudioTab.entries,
+                items = uiState.availableTabs,
                 key = { it.name }
             ) { tab ->
                 val selected = !uiState.showFavoritesOnly && uiState.selectedTab == tab
+                val count = uiState.tabCount(tab)
                 FilterChip(
                     selected = selected,
                     onClick = { onSelectTab(tab) },
                     label = {
                         Text(
-                            text = tab.arabicLabel,
+                            text = "${tab.label} ($count)",
                             fontFamily = CairoFontFamily,
                             fontSize = 12.sp
                         )
@@ -202,6 +242,10 @@ internal fun EffectLibraryPanel(
             ) { item ->
                 val isFav = item.id in uiState.favoriteEffectIds
                 val isSelected = uiState.activePass?.effectId == item.id
+                val gpuThumb = com.example.gl.rememberShaderThumbnail(
+                    effectId = item.id,
+                    clip = uiState.previewClip
+                )
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(12.dp))
@@ -218,7 +262,7 @@ internal fun EffectLibraryPanel(
                         label = item.arabicDisplayName(),
                         kind = SampleCardKind.Effect(item.id),
                         isSelected = isSelected,
-                        sceneThumbnail = sceneThumbnail,
+                        sceneThumbnail = gpuThumb ?: sceneThumbnail,
                         onClick = { onSelectEffect(item) },
                         testTag = "reeffect_item_${item.id}",
                         selectedAccentColor = colorScheme.primary,
@@ -242,5 +286,15 @@ internal fun EffectLibraryPanel(
                 }
             }
         }
+    }
+
+    if (showPackImporter) {
+        PackImportStudioSheet(
+            initialTab = "ALL",
+            onDismiss = { showPackImporter = false },
+            onApplyEffectItem = { effectId ->
+                CustomPackRepository.findCatalogItem(effectId)?.let(onSelectEffect)
+            }
+        )
     }
 }

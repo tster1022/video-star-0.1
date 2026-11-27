@@ -1,20 +1,29 @@
 package com.example
 
 import com.example.data.VideoStarRepository
+import com.example.engine.effects.AlightMotionEffectRegistry
+import com.example.engine.effects.shaders.ShaderUniformEvaluator
+import com.example.engine.sam.SamCutoutSegmenter
 import com.example.gl.ShaderLibrary
 import com.example.model.AspectRatioMode
+import com.example.model.BezierCurveSpec
 import com.example.model.EffectCatalog
 import com.example.model.EffectCategory
 import com.example.model.EffectKeyframe
 import com.example.model.EffectStudioTab
+import com.example.model.KeyframeEasing
 import com.example.model.MaskMode
 import com.example.model.MaskShape
 import com.example.model.MediaClip
 import com.example.model.MotionPreset
+import com.example.model.ParameterKeyframe
+import com.example.model.SamCutoutSpec
+import com.example.model.SamTapPoint
 import com.example.model.ShaderEffectPass
 import com.example.model.TextLayerSpec
 import com.example.model.TransitionCatalog
 import com.example.model.TransitionCategory
+import com.example.model.interpolateColorKeyframes
 import com.example.ui.screens.effects.EffectsStudioViewModel
 import com.example.ui.screens.keyframe.KeyframeViewModel
 import com.example.ui.screens.layers.LayersViewModel
@@ -37,20 +46,22 @@ import org.robolectric.annotation.Config
 class VideoStarShadersAndToolsTest {
 
     @Test
-    fun `effect catalog provides 35 shaders across 6 categories and matches ShaderLibrary`() {
+    fun `effect catalog provides 35 Video Star plus 110 AM shaders across 15 categories and matches ShaderLibrary`() {
         assertEquals(35, EffectCatalog.shaderEffects.size)
-        assertEquals(6, EffectCategory.entries.size)
+        assertEquals(110, AlightMotionEffectRegistry.effects.size)
+        assertEquals(145, EffectCatalog.combinedShaderEffects.size)
+        assertEquals(15, EffectCategory.entries.size)
 
         EffectCategory.entries.forEach { category ->
-            val count = EffectCatalog.shaderEffects.count { it.category == category }
+            val count = EffectCatalog.combinedShaderEffects.count { it.category == category }
             assertTrue("Expected effects in $category", count > 0)
         }
 
-        EffectCatalog.shaderEffects.forEach { effect ->
+        EffectCatalog.combinedShaderEffects.forEach { effect ->
             assertTrue("ShaderLibrary missing GLSL body for ${effect.id}", ShaderLibrary.hasShader(effect.id))
             val glsl = ShaderLibrary.fragmentShaderFor(effect.id)
-            assertTrue(glsl.contains("#version 300 es"))
-            assertTrue(glsl.contains("outColor"))
+            assertTrue("Missing #version 300 es for ${effect.id}", glsl.contains("#version 300 es"))
+            assertTrue("Missing outColor for ${effect.id}", glsl.contains("outColor"))
         }
 
         // Legacy ID aliases resolve cleanly
@@ -294,22 +305,25 @@ class VideoStarShadersAndToolsTest {
     }
 
     @Test
-    fun `effects studio 5 tabs cover all 35 shaders cleanly`() {
+    fun `effects studio 12 tabs cover all 145 shaders cleanly`() {
         val project = VideoStarRepository.createProject("اختبار التبويبات", AspectRatioMode.PORTRAIT)
         val vm = EffectsStudioViewModel(project.id, listOf(0))
 
+        assertEquals(12, EffectStudioTab.entries.size)
         vm.selectTab(EffectStudioTab.ALL)
-        assertEquals(35, vm.uiState.value.displayedEffects.size)
+        assertEquals(145, vm.uiState.value.displayedEffects.size)
 
         val nonAllTabs = EffectStudioTab.entries.filter { it != EffectStudioTab.ALL }
         var sum = 0
         nonAllTabs.forEach { tab ->
             vm.selectTab(tab)
             val items = vm.uiState.value.displayedEffects
-            assertTrue("Expected effects in $tab", items.isNotEmpty())
+            if (tab != EffectStudioTab.MY_EFFECTS) {
+                assertTrue("Expected effects in $tab", items.isNotEmpty())
+            }
             sum += items.size
         }
-        assertEquals(35, sum)
+        assertEquals(145, sum)
 
         VideoStarRepository.deleteProject(project.id)
     }
@@ -423,9 +437,9 @@ class VideoStarShadersAndToolsTest {
 
         // Favorites filter
         vm.toggleFavoritesFilter()
-        assertTrue(vm.uiState.value.displayedEffects.size < 35)
+        assertTrue(vm.uiState.value.displayedEffects.size < 145)
         vm.toggleFavoritesFilter()
-        assertEquals(35, vm.uiState.value.displayedEffects.size)
+        assertEquals(145, vm.uiState.value.displayedEffects.size)
 
         VideoStarRepository.deleteProject(project.id)
     }
@@ -738,7 +752,215 @@ class VideoStarShadersAndToolsTest {
 
         VideoStarRepository.deleteProject(project.id)
     }
+
+    @Test
+    fun `alight motion 9 categories contain exact 110 unique effects with valid shaders`() {
+        val expectedCounts = mapOf(
+            EffectCategory.AM_MOVE_TRANSFORM to 12,
+            EffectCategory.AM_DISTORTION_WARP to 18,
+            EffectCategory.AM_MATTE_MASK_KEY to 11,
+            EffectCategory.AM_OPACITY_VISIBILITY to 7,
+            EffectCategory.AM_PROCEDURAL to 23,
+            EffectCategory.AM_REPEAT to 7,
+            EffectCategory.AM_THREE_D to 18,
+            EffectCategory.AM_TEXT to 6,
+            EffectCategory.AM_OTHER to 8
+        )
+        assertEquals(110, expectedCounts.values.sum())
+        assertEquals(110, AlightMotionEffectRegistry.effects.map { it.id }.toSet().size)
+
+        expectedCounts.forEach { (category, expected) ->
+            val actual = AlightMotionEffectRegistry.effects.filter { it.category == category }
+            assertEquals("Category count mismatch for $category", expected, actual.size)
+            actual.forEach { item ->
+                assertTrue("Missing GLSL shader for ${item.id}", ShaderLibrary.hasShader(item.id))
+                val shader = ShaderLibrary.fragmentShaderFor(item.id)
+                assertTrue("Shader missing uParams/main for ${item.id}", shader.contains("void main()"))
+            }
+        }
+    }
+
+    @Test
+    fun `shader uniform evaluator packs typed parameters quantizes time and formats dynamic text`() {
+        // 1. Color + Point2D + Float packing check (am_inner_pinch_bulge + am_adv_chroma_key)
+        val pinchCatalog = EffectCatalog.findById("am_inner_pinch_bulge")!!
+        val pinchPass = ShaderEffectPass(
+            id = "p_pinch",
+            effectId = pinchCatalog.id,
+            effectName = pinchCatalog.name,
+            category = pinchCatalog.category,
+            intensity = 0.8f,
+            params = mapOf("center_x" to 0.25f, "center_y" to 0.75f, "strength" to 0.6f, "radius" to 0.4f, "feather" to 0.2f)
+        )
+        val pinchUniforms = ShaderUniformEvaluator.evaluate(pinchPass, 0.5f, 4.0f)
+        assertEquals(0.25f, pinchUniforms.params[0], 0.001f)
+        assertEquals(0.75f, pinchUniforms.params[1], 0.001f)
+        assertEquals(0.6f, pinchUniforms.params[2], 0.001f)
+        assertEquals(2.0f, pinchUniforms.effectiveTimeSec, 0.001f)
+
+        val chromaCatalog = EffectCatalog.findById("am_adv_chroma_key")!!
+        val chromaPass = ShaderEffectPass(
+            id = "p_chroma",
+            effectId = chromaCatalog.id,
+            effectName = chromaCatalog.name,
+            category = chromaCatalog.category,
+            colorParams = mapOf("key_color" to 0xFF00FF80L)
+        )
+        val chromaUniforms = ShaderUniformEvaluator.evaluate(chromaPass, 0.5f, 2.0f)
+        assertEquals(0f, chromaUniforms.colors[0], 0.01f)
+        assertEquals(1f, chromaUniforms.colors[1], 0.01f)
+        assertEquals(128f / 255f, chromaUniforms.colors[2], 0.02f)
+
+        // 2. Time Quantization
+        val quantPass = ShaderEffectPass(
+            id = "p_q",
+            effectId = "am_time_quantization",
+            effectName = "Time Quantization",
+            category = EffectCategory.AM_OTHER,
+            params = mapOf("target_fps" to 4f, "phase_offset" to 0f)
+        )
+        val (qProg, qSec) = ShaderUniformEvaluator.computeQuantizedProgress(quantPass, 0.37f, 2.0f)
+        // 2.0s * 4fps = 8 steps; floor(0.37 * 8) / 8 = 2 / 8 = 0.25
+        assertEquals(0.25f, qProg, 0.01f)
+        assertEquals(0.5f, qSec, 0.02f)
+
+        // 3. Dynamic Text formatting (Counter, Progress, Randomizer, Timecode)
+        val countPass = ShaderEffectPass(
+            id = "p_cnt",
+            effectId = "am_text_count",
+            effectName = "Count Up/Down",
+            category = EffectCategory.AM_TEXT,
+            params = mapOf("start_val" to 0f, "end_val" to 100f, "decimals" to 0f, "comma_sep" to 0f),
+            textParams = mapOf("prefix" to "$", "suffix" to "pts")
+        )
+        val counted = ShaderUniformEvaluator.formatTextForEffects("Hello", listOf(countPass), 0.5f, 4f)
+        assertEquals("$50pts", counted)
+
+        val tcPass = ShaderEffectPass(
+            id = "p_tc",
+            effectId = "am_text_timecode",
+            effectName = "Timecode",
+            category = EffectCategory.AM_TEXT,
+            params = mapOf("tc_format" to 1f, "offset_sec" to 0f, "frame_rate" to 30f)
+        )
+        val formattedTc = ShaderUniformEvaluator.formatTextForEffects("Hello", listOf(tcPass), 0.5f, 10f)
+        assertEquals("00:05.00", formattedTc)
+    }
+
+    @Test
+    fun `custom cubic bezier curve color keyframes and 2D studio inspector updates work seamlessly`() {
+        // Direct curve + color interpolation checks
+        val kfs = listOf(
+            ParameterKeyframe(
+                id = "c1",
+                time = 0f,
+                value = 0f,
+                easing = KeyframeEasing.CUBIC_BEZIER,
+                customBezier = BezierCurveSpec(0.1f, 0.9f, 0.2f, 1.0f),
+                colorArgb = 0xFFFF0000L
+            ),
+            ParameterKeyframe(
+                id = "c2",
+                time = 1f,
+                value = 1f,
+                easing = KeyframeEasing.LINEAR,
+                colorArgb = 0xFF0000FFL
+            )
+        )
+        val midColor = interpolateColorKeyframes(kfs, 0.5f, 0xFFFFFFFFL).toInt()
+        // Custom steep Ease-Out Bezier jumps red down & blue high by t=0.5
+        assertTrue(android.graphics.Color.blue(midColor) > android.graphics.Color.red(midColor))
+
+        // Studio VM Color + Point2D + Text + CustomBezier editing
+        val project = VideoStarRepository.createProject("AM Inspector Test", AspectRatioMode.SQUARE)
+        val vm = EffectsStudioViewModel(project.id, listOf(0), targetLayerId = "layer_1")
+        val swipe = EffectCatalog.findById("am_radial_wipe")!!
+        vm.addEffectFromLibrary(swipe)
+
+        val pinch = EffectCatalog.findById("am_inner_pinch_bulge")!!
+        vm.selectEffect(pinch)
+        val cxSpec = pinch.params.first { it.key == "center_x" }
+        val cySpec = pinch.params.first { it.key == "center_y" }
+        vm.updatePassPoint2D("center_x", "center_y", 0.35f, 0.65f)
+        assertEquals(0.35f, vm.uiState.value.evaluatedParamValue(cxSpec), 0.01f)
+        assertEquals(0.65f, vm.uiState.value.evaluatedParamValue(cySpec), 0.01f)
+
+        val matteFringe = EffectCatalog.findById("am_matte_fringe")!!
+        val colorSpec = matteFringe.params.first { it.key == "fringe_color" }
+        vm.selectEffect(matteFringe)
+        vm.seekToProgress(0f)
+        vm.updatePassColor("fringe_color", 0xFFFF0000L)
+        vm.togglePropertyKeyframe("fringe_color")
+        vm.updatePropertyCustomBezier("fringe_color", BezierCurveSpec(0.25f, 0.8f, 0.25f, 1.0f))
+        vm.seekToProgress(1f)
+        vm.updatePassColor("fringe_color", 0xFF00FF00L)
+        vm.seekToProgress(0.5f)
+
+        val evaluatedMid = vm.uiState.value.evaluatedColorValue(colorSpec).toInt()
+        assertTrue(android.graphics.Color.green(evaluatedMid) > android.graphics.Color.red(evaluatedMid))
+
+        val counter = EffectCatalog.findById("am_text_count")!!
+        val prefixSpec = counter.params.first { it.key == "prefix" }
+        vm.selectEffect(counter)
+        vm.updatePassText("prefix", "SCORE:")
+        assertEquals("SCORE:", vm.uiState.value.evaluatedTextValue(prefixSpec))
+
+        VideoStarRepository.deleteProject(project.id)
+    }
+
+    @Test
+    fun `sam cutout segmenter isolates center foreground subject from uniform background and respects tap points and invert`() {
+        val w = 32
+        val h = 32
+        val pixels = IntArray(w * h)
+        // Bright saturated magenta subject in center [10..22, 10..22], flat dark background elsewhere
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val isSubject = x in 10..21 && y in 10..21
+                pixels[y * w + x] = if (isSubject) {
+                    android.graphics.Color.rgb(250, 40, 180)
+                } else {
+                    android.graphics.Color.rgb(18, 22, 28)
+                }
+            }
+        }
+
+        val autoMask = SamCutoutSegmenter.computeRefinedConfidenceMask(
+            width = w,
+            height = h,
+            pixels = pixels,
+            spec = SamCutoutSpec(enabled = true, isolateAllSubjects = true, feather = 0.0f, choke = 0.0f, invert = false)
+        )
+        val centerAlpha = autoMask[16 * w + 16]
+        val cornerAlpha = autoMask[1 * w + 1]
+        assertTrue("Expected foreground center alpha ($centerAlpha) >> corner ($cornerAlpha)", centerAlpha > 0.7f && cornerAlpha < 0.25f)
+
+        // Invert flips foreground vs background cleanly
+        val invertedMask = SamCutoutSegmenter.computeRefinedConfidenceMask(
+            width = w,
+            height = h,
+            pixels = pixels,
+            spec = SamCutoutSpec(enabled = true, isolateAllSubjects = true, feather = 0.0f, choke = 0.0f, invert = true)
+        )
+        assertTrue(invertedMask[1 * w + 1] > 0.7f)
+        assertTrue(invertedMask[16 * w + 16] < 0.3f)
+
+        // Exclude tap near center removes the tapped region confidence
+        val tapExcludedMask = SamCutoutSegmenter.computeRefinedConfidenceMask(
+            width = w,
+            height = h,
+            pixels = pixels,
+            spec = SamCutoutSpec(
+                enabled = true,
+                isolateAllSubjects = false,
+                tapPoints = listOf(SamTapPoint("p1", 0.5f, 0.5f, include = false)),
+                feather = 0f
+            )
+        )
+        assertTrue(tapExcludedMask[16 * w + 16] < centerAlpha)
+    }
 }
+
 
 
 

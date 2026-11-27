@@ -45,10 +45,10 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import com.example.ui.components.PrecisionRulerDialSlider
+import com.example.ui.components.rememberStudioTickHaptics
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
@@ -659,29 +659,22 @@ internal fun AdjustZoomDrawer(
             .padding(top = 6.dp)
             .testTag("adjust_zoom_slider_panel")
     ) {
+        val zoomHaptics = rememberStudioTickHaptics()
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp),
+                .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(
-                text = "تكبير ${String.format(java.util.Locale.US, "%d%%", (scale * 100f).roundToInt())}",
-                fontFamily = CairoFontFamily,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 12.sp,
-                color = AdjustVideoTitleDark
-            )
-            Slider(
+            PrecisionRulerDialSlider(
+                label = "تكبير",
+                valueText = "${(scale * 100f).roundToInt()}%",
                 value = scale,
                 onValueChange = onScaleChange,
                 valueRange = 0.35f..3.5f,
-                colors = SliderDefaults.colors(
-                    thumbColor = AdjustVideoMagenta,
-                    activeTrackColor = AdjustVideoMagenta,
-                    inactiveTrackColor = VideoStarIosDivider
-                ),
+                defaultValue = 1.0f,
+                height = 40.dp,
                 modifier = Modifier.weight(1f)
             )
             Text(
@@ -692,7 +685,10 @@ internal fun AdjustZoomDrawer(
                 color = AdjustVideoMagenta,
                 modifier = Modifier
                     .clip(RoundedCornerShape(6.dp))
-                    .clickable(onClick = onResetTransform)
+                    .clickable {
+                        zoomHaptics.pulseSelection()
+                        onResetTransform()
+                    }
                     .padding(horizontal = 8.dp, vertical = 6.dp)
             )
         }
@@ -810,33 +806,15 @@ private fun GradingSliderRow(
     valueRange: ClosedFloatingPointRange<Float>,
     onValueChange: (Float) -> Unit
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(30.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Text(
-            text = label,
-            fontFamily = CairoFontFamily,
-            fontWeight = FontWeight.SemiBold,
-            fontSize = 11.sp,
-            color = AdjustVideoTitleDark,
-            modifier = Modifier.width(62.dp)
-        )
-        Slider(
-            value = value,
-            onValueChange = onValueChange,
-            valueRange = valueRange,
-            colors = SliderDefaults.colors(
-                thumbColor = AdjustVideoMagenta,
-                activeTrackColor = AdjustVideoMagenta,
-                inactiveTrackColor = VideoStarIosDivider
-            ),
-            modifier = Modifier.weight(1f)
-        )
-    }
+    PrecisionRulerDialSlider(
+        label = label,
+        valueText = String.format(java.util.Locale.US, "%.2f", value),
+        value = value,
+        onValueChange = onValueChange,
+        valueRange = valueRange,
+        height = 38.dp,
+        modifier = Modifier.padding(vertical = 2.dp)
+    )
 }
 
 @Composable

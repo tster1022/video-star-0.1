@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -35,6 +36,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CameraAlt
+import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
@@ -55,8 +57,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -64,11 +69,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
@@ -88,8 +97,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.R
 import com.example.data.MediaImportHelper
+import com.example.engine.render.StudioRenderMemoryCoordinator
 import com.example.model.AspectRatioMode
+import com.example.model.MediaClip
 import com.example.model.NewClipAction
+import com.example.model.StudioLayoutMode
 import com.example.model.TimelineScene
 import com.example.model.WorkspaceTab
 import com.example.model.evaluateVelocityAt
@@ -109,6 +121,7 @@ import com.example.ui.theme.InterFontFamily
 import com.example.ui.theme.LocalVideoStarColors
 import com.example.ui.theme.VideoStarBlack
 import com.example.ui.theme.VideoStarCameraPill
+import com.example.ui.theme.VideoStarDarkBackground
 import com.example.ui.theme.VideoStarInkDark
 import com.example.ui.theme.VideoStarInkMuted
 import com.example.ui.theme.VideoStarIosDivider
@@ -121,6 +134,7 @@ import com.example.ui.theme.VideoStarWhite
 import com.example.viewmodel.SharedProjectViewModel
 import kotlinx.coroutines.delay
 import java.util.Locale
+import java.util.UUID
 
 @Composable
 fun WorkspaceScreen(
@@ -136,7 +150,13 @@ fun WorkspaceScreen(
     onOpenTransform: (projectId: String, sceneIndex: Int) -> Unit,
     onOpenMix: (projectId: String, sceneIndex: Int) -> Unit,
     onOpenLayers: (projectId: String) -> Unit,
-    onOpenTiming: (projectId: String, sceneIndex: Int) -> Unit
+    onOpenTiming: (projectId: String, sceneIndex: Int) -> Unit,
+    onOpenEffectsStudio: (projectId: String, sceneIndices: List<Int>, isDarkTheme: Boolean) -> Unit = { id, indices, _ ->
+        onOpenReEffect(id, indices)
+    },
+    onOpenEffectsStudioForTarget: ((projectId: String, sceneIndices: List<Int>, targetLayerId: String?, isDarkTheme: Boolean) -> Unit)? = null,
+    onOpenShaderGallery: (projectId: String, sceneIndex: Int, targetLayerId: String?) -> Unit = { _, _, _ -> },
+    onOpenLayersForScene: ((projectId: String, sceneIndex: Int) -> Unit)? = null
 ) {
     val viewModel: WorkspaceViewModel = viewModel(
         key = "workspace_$projectId",
@@ -163,6 +183,12 @@ fun WorkspaceScreen(
     var addAnchorBounds by remember { mutableStateOf<Rect?>(null) }
     var thumbAnchorBounds by remember { mutableStateOf<Rect?>(null) }
     var showShutterFlash by remember { mutableStateOf(false) }
+    var rootOffsetInRoot by remember { mutableStateOf(Offset.Zero) }
+    var previewBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
+    var transitionRequest by remember { mutableStateOf<BlueprintTransitionRequest?>(null) }
+    var transitionSeq by remember { mutableLongStateOf(0L) }
+    var chromeAlpha by remember { mutableFloatStateOf(1f) }
+    var isAeOverlayInEffectMode by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
     val videoPickerLauncher = rememberLauncherForActivityResult(
@@ -175,13 +201,26 @@ fun WorkspaceScreen(
                 sourceUri = pickedUri,
                 isVideo = true
             ) { imported ->
-                onOpenAdjustVideo(
-                    projectId,
-                    imported.localUriString,
-                    imported.durationMs,
-                    imported.sourceFps,
-                    null
-                )
+                if (viewModel.uiState.value.studioLayout == StudioLayoutMode.AFTER_EFFECTS) {
+                    viewModel.addAeMediaLayer(
+                        MediaClip.Video(
+                            id = "clip_${UUID.randomUUID().toString().take(8)}",
+                            uriString = imported.localUriString,
+                            startTrimMs = 0L,
+                            endTrimMs = imported.durationMs,
+                            durationMs = imported.durationMs,
+                            sourceFps = imported.sourceFps
+                        )
+                    )
+                } else {
+                    onOpenAdjustVideo(
+                        projectId,
+                        imported.localUriString,
+                        imported.durationMs,
+                        imported.sourceFps,
+                        null
+                    )
+                }
             }
         }
     }
@@ -196,7 +235,62 @@ fun WorkspaceScreen(
                 sourceUri = pickedUri,
                 isVideo = false
             ) { imported ->
-                onOpenAdjustPhoto(projectId, imported.localUriString, null)
+                if (viewModel.uiState.value.studioLayout == StudioLayoutMode.AFTER_EFFECTS) {
+                    viewModel.addAeMediaLayer(
+                        MediaClip.Photo(
+                            id = "clip_${UUID.randomUUID().toString().take(8)}",
+                            uriString = imported.localUriString,
+                            durationMs = 3_000L
+                        )
+                    )
+                } else {
+                    onOpenAdjustPhoto(projectId, imported.localUriString, null)
+                }
+            }
+        }
+    }
+
+    val galleryMediaPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { pickedUri ->
+        if (pickedUri != null) {
+            val isVideo = MediaImportHelper.isVideoUri(context, pickedUri)
+            sharedProjectViewModel.importMediaToProject(
+                context = context,
+                projectId = projectId,
+                sourceUri = pickedUri,
+                isVideo = isVideo
+            ) { imported ->
+                if (viewModel.uiState.value.studioLayout == StudioLayoutMode.AFTER_EFFECTS) {
+                    val clipId = "clip_${UUID.randomUUID().toString().take(8)}"
+                    val clip: MediaClip = if (isVideo) {
+                        MediaClip.Video(
+                            id = clipId,
+                            uriString = imported.localUriString,
+                            startTrimMs = 0L,
+                            endTrimMs = imported.durationMs,
+                            durationMs = imported.durationMs,
+                            sourceFps = imported.sourceFps
+                        )
+                    } else {
+                        MediaClip.Photo(
+                            id = clipId,
+                            uriString = imported.localUriString,
+                            durationMs = 3_000L
+                        )
+                    }
+                    viewModel.addAeMediaLayer(clip)
+                } else if (isVideo) {
+                    onOpenAdjustVideo(
+                        projectId,
+                        imported.localUriString,
+                        imported.durationMs,
+                        imported.sourceFps,
+                        null
+                    )
+                } else {
+                    onOpenAdjustPhoto(projectId, imported.localUriString, null)
+                }
             }
         }
     }
@@ -231,11 +325,21 @@ fun WorkspaceScreen(
         }
     }
 
-    BackHandler(enabled = uiState.isTrimMode || uiState.isSplitMode || uiState.isSelectionMode) {
+    BackHandler(
+        enabled = uiState.isLayoutModalVisible ||
+            uiState.isInlineEffectMode ||
+            uiState.isTrimMode ||
+            uiState.isSplitMode ||
+            uiState.isSelectionMode ||
+            uiState.isPlaying
+    ) {
         when {
+            uiState.isLayoutModalVisible -> viewModel.dismissLayoutModal()
+            uiState.isInlineEffectMode -> viewModel.exitEffectMode()
             uiState.isTrimMode -> viewModel.cancelTrimMode()
             uiState.isSplitMode -> viewModel.cancelSplitMode()
             uiState.isSelectionMode -> viewModel.exitSelectionMode()
+            uiState.isPlaying -> viewModel.pausePlayback()
         }
     }
 
@@ -297,42 +401,250 @@ fun WorkspaceScreen(
     val activeScene = uiState.activeScene
     val nextScene = project.scenes.getOrNull(uiState.activeSceneIndex + 1)
     val localScenePosMs = uiState.localPositionInActiveSceneMs
+    val activeLayout = uiState.studioLayout
+    val isDarkWorkspaceLayout = activeLayout != StudioLayoutMode.NOVA && !uiState.isTrimMode && !uiState.isSplitMode
+    LaunchedEffect(activeLayout) {
+        if (activeLayout != StudioLayoutMode.AFTER_EFFECTS) {
+            isAeOverlayInEffectMode = false
+        }
+    }
 
-    Box(
-        modifier = Modifier
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.pausePlayback()
+            StudioRenderMemoryCoordinator.trimTemporaryBuffers(aggressive = false)
+        }
+    }
+
+    val studioCallbacks = remember(projectId, uiState.activeSceneIndex, activeLayout, project.scenes.size, uiState.selectedAeLayerId) {
+        StudioLayoutCallbacks(
+            onTogglePlayback = viewModel::togglePlayback,
+            onPausePlayback = viewModel::pausePlayback,
+            onBeginScrubbing = viewModel::beginScrubbing,
+            onEndScrubbing = viewModel::endScrubbing,
+            onSeekProgress = viewModel::seekToProgress,
+            onSeekPositionMs = viewModel::seekToPositionMs,
+            onStepBackward = viewModel::stepBackward,
+            onStepForward = viewModel::stepForward,
+            onSelectScene = viewModel::selectScene,
+            onSyncVideoPos = viewModel::syncPositionFromLocalVideo,
+            onSceneEnded = viewModel::onScenePlaybackEnded,
+            onEnterEffectMode = viewModel::enterEffectMode,
+            onOpenFullEffectsStudio = {
+                val latestState = viewModel.uiState.value
+                val latestProj = latestState.project ?: project
+                if (latestProj.scenes.isEmpty() && latestState.aeLayers.isEmpty()) {
+                    videoPickerLauncher.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                    )
+                } else {
+                    val targetAeLayer = if (activeLayout == StudioLayoutMode.AFTER_EFFECTS) {
+                        latestProj.resolveActiveAeLayer(latestState.currentPositionMs, latestState.selectedAeLayerId)
+                    } else null
+                    val targetAeId = targetAeLayer?.id
+                    val resolvedSceneIdx = latestProj.resolveSceneIndexForAeLayer(targetAeLayer) ?: latestState.activeSceneIndex
+                    val targetNav = onOpenEffectsStudioForTarget
+                    if (targetNav != null) {
+                        targetNav(
+                            projectId,
+                            listOf(resolvedSceneIdx),
+                            targetAeId,
+                            activeLayout != StudioLayoutMode.NOVA
+                        )
+                    } else {
+                        onOpenEffectsStudio(
+                            projectId,
+                            listOf(resolvedSceneIdx),
+                            activeLayout != StudioLayoutMode.NOVA
+                        )
+                    }
+                }
+            },
+            onOpenLayerEffectsStudio = { explicitLayerId ->
+                val latestState = viewModel.uiState.value
+                val latestProj = latestState.project ?: project
+                val targetAeLayer = explicitLayerId?.let { id -> latestProj.aeLayers.firstOrNull { it.id == id } }
+                    ?: latestProj.resolveActiveAeLayer(latestState.currentPositionMs, latestState.selectedAeLayerId)
+                val targetAeId = explicitLayerId ?: targetAeLayer?.id
+                val resolvedSceneIdx = latestProj.resolveSceneIndexForAeLayer(targetAeLayer) ?: latestState.activeSceneIndex
+                val targetNav = onOpenEffectsStudioForTarget
+                if (targetNav != null) {
+                    targetNav(
+                        projectId,
+                        listOf(resolvedSceneIdx),
+                        targetAeId,
+                        activeLayout != StudioLayoutMode.NOVA
+                    )
+                } else {
+                    onOpenEffectsStudio(
+                        projectId,
+                        listOf(resolvedSceneIdx),
+                        activeLayout != StudioLayoutMode.NOVA
+                    )
+                }
+            },
+            onOpenAudio = viewModel::openAudioDialog,
+            onImportVideo = {
+                videoPickerLauncher.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                )
+            },
+            onImportPhoto = {
+                photoPickerLauncher.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                )
+            },
+            onOpenLayers = {
+                onOpenLayersForScene?.invoke(projectId, uiState.activeSceneIndex) ?: onOpenLayers(projectId)
+            },
+            onOpenTransform = {
+                if (project.scenes.isEmpty()) {
+                    viewModel.showMessage("أضف مشهداً أولاً للتحجيم والتدوير")
+                } else {
+                    onOpenTransform(projectId, uiState.activeSceneIndex)
+                }
+            },
+            onOpenMotion = {
+                if (project.scenes.isEmpty()) {
+                    viewModel.showMessage("أضف مشهداً أولاً لتطبيق الحركة")
+                } else {
+                    onOpenMotion(projectId, uiState.activeSceneIndex)
+                }
+            },
+            onOpenVelocity = {
+                if (project.scenes.isEmpty()) {
+                    viewModel.showMessage("أضف مشهداً أولاً لتعديل السرعة")
+                } else {
+                    onOpenVelocity(projectId, uiState.activeSceneIndex)
+                }
+            },
+            onOpenMix = {
+                if (uiState.activeSceneIndex >= project.scenes.lastIndex) {
+                    viewModel.showMessage("يلزم وجود مشهد تالٍ للدمج")
+                } else {
+                    onOpenMix(projectId, uiState.activeSceneIndex)
+                }
+            },
+            onEnterSplitMode = viewModel::enterSplitMode,
+            onExportVideo = {
+                sharedProjectViewModel.exportProjectVideo(context, projectId)
+            },
+            onSelectNodeStage = viewModel::selectNodeGraphStage,
+            onToggleQuickEffect = viewModel::toggleQuickShaderEffect,
+            onPreviewBoundsChanged = { previewBoundsInRoot = it },
+            onUndo = viewModel::undoTimelineEdit,
+            onRedo = viewModel::redoTimelineEdit,
+            onDuplicateScene = viewModel::duplicateActiveScene,
+            onDeleteScene = viewModel::requestDeleteActiveScene,
+            onEnterTrimMode = viewModel::openTrimDialog,
+            onImportGalleryMedia = {
+                galleryMediaPickerLauncher.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                )
+            },
+            onOpenLayoutModal = viewModel::openLayoutModal,
+            onCloseWorkspace = {
+                viewModel.saveBeforeClose()
+                onCloseToHome()
+            },
+            onAfterEffectsOverlayChanged = { isOpen ->
+                isAeOverlayInEffectMode = isOpen
+            },
+            onOpenShaderGallery = {
+                val latestState = viewModel.uiState.value
+                val latestProj = latestState.project ?: project
+                val targetAeLayer = if (activeLayout == StudioLayoutMode.AFTER_EFFECTS) {
+                    latestProj.resolveActiveAeLayer(latestState.currentPositionMs, latestState.selectedAeLayerId)
+                } else null
+                val targetAeId = targetAeLayer?.id
+                val resolvedSceneIdx = latestProj.resolveSceneIndexForAeLayer(targetAeLayer) ?: latestState.activeSceneIndex
+                onOpenShaderGallery(projectId, resolvedSceneIdx, targetAeId)
+            },
+            onSelectAeLayer = viewModel::selectAeLayer,
+            onAddAeLayerKind = viewModel::addAeLayerByKind,
+            onToggleAeLayerVisibility = viewModel::toggleAeLayerVisibility,
+            onToggleAeLayerLock = viewModel::toggleAeLayerLock,
+            onRenameAeLayer = viewModel::renameAeLayer,
+            onDuplicateAeLayer = viewModel::duplicateSelectedAeLayer,
+            onDeleteAeLayer = viewModel::deleteSelectedAeLayer,
+            onBeginAeLayerReorder = viewModel::beginAeLayerReorder,
+            onReorderAeLayer = viewModel::reorderAeLayer,
+            onBeginAeLayerTimingDrag = viewModel::beginAeLayerReorder,
+            onMoveAeLayerTiming = viewModel::moveAeLayerTiming,
+            onCommitAeLayerTiming = viewModel::commitAeLayerTimingDrag,
+            onAddAeLayerEffect = viewModel::addAeLayerEffect,
+            onUpdateAeLayerEffectPass = viewModel::updateAeLayerEffectPass,
+            onRemoveAeLayerEffectPass = viewModel::removeAeLayerEffectPass,
+            onToggleAeLayerEffectKeyframe = viewModel::toggleAeLayerEffectKeyframe,
+            onUpdateAeLayerProps = viewModel::updateAeLayerProperties,
+            onToggleAeTransformKeyframe = viewModel::toggleAeLayerTransformKeyframe,
+            onTrimAeLayerStart = viewModel::trimAeLayerStartToPlayhead,
+            onTrimAeLayerEnd = viewModel::trimAeLayerEndToPlayhead,
+            onSplitAeLayer = viewModel::splitAeLayerAtPlayhead
+        )
+    }
+
+    val rootBackgroundModifier = if (isDarkWorkspaceLayout) {
+        Modifier
+            .fillMaxSize()
+            .background(VideoStarDarkBackground)
+    } else {
+        Modifier
             .fillMaxSize()
             .geometricTriangleBackground()
+    }
+
+    Box(
+        modifier = rootBackgroundModifier
+            .onGloballyPositioned { rootOffsetInRoot = it.positionInRoot() }
     ) {
         Scaffold(
             containerColor = Color.Transparent,
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
             snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
             bottomBar = {
-                when {
-                    uiState.isTrimMode -> {
-                        TrimBottomBar(
-                            onCancelClick = viewModel::cancelTrimMode,
-                            onConfirmClick = viewModel::confirmTrimMode
-                        )
-                    }
-                    uiState.isSplitMode -> {
-                        SplitBottomBar(
-                            onCancelClick = viewModel::cancelSplitMode,
-                            onUpArrowClick = viewModel::toggleSceneStrip,
-                            onSplitClick = viewModel::confirmSplitScene
-                        )
-                    }
-                    else -> {
-                        WorkspaceBottomBar(
-                            activeTab = uiState.activeTab,
-                            onAudioClick = viewModel::openAudioDialog,
-                            onTabSelected = viewModel::onTabSelected,
-                            onEditBoundsChanged = { editTabAnchorBounds = it },
-                            onNewBoundsChanged = { newTabAnchorBounds = it },
-                            onInfoBoundsChanged = { infoAnchorBounds = it },
-                            onAddBoundsChanged = { addAnchorBounds = it },
-                            onInfoClick = viewModel::toggleInfoPopover,
-                            onAddClick = viewModel::toggleAddPopover
-                        )
+                Box(modifier = Modifier.graphicsLayer { alpha = chromeAlpha }) {
+                    when {
+                        uiState.isInlineEffectMode && activeLayout != StudioLayoutMode.AFTER_EFFECTS -> {
+                            WorkspaceInlineEffectsDrawer(
+                                layoutMode = activeLayout,
+                                activeCategory = uiState.activeEffectFilterCategory,
+                                appliedPasses = activeScene?.resolvedEffectPasses().orEmpty(),
+                                hasScenes = project.scenes.isNotEmpty(),
+                                onSelectCategory = viewModel::setInlineEffectCategory,
+                                onToggleShaderEffect = viewModel::toggleQuickShaderEffect,
+                                onClearAllEffects = viewModel::clearActiveSceneEffects,
+                                onOpenFullStudio = studioCallbacks.onOpenFullEffectsStudio,
+                                onOpenShaderGallery = studioCallbacks.onOpenShaderGallery,
+                                onDone = viewModel::exitEffectMode
+                            )
+                        }
+                        uiState.isTrimMode -> {
+                            TrimBottomBar(
+                                onCancelClick = viewModel::cancelTrimMode,
+                                onConfirmClick = viewModel::confirmTrimMode
+                            )
+                        }
+                        uiState.isSplitMode -> {
+                            SplitBottomBar(
+                                onCancelClick = viewModel::cancelSplitMode,
+                                onUpArrowClick = viewModel::toggleSceneStrip,
+                                onSplitClick = viewModel::confirmSplitScene
+                            )
+                        }
+                        activeLayout == StudioLayoutMode.NOVA -> {
+                            WorkspaceBottomBar(
+                                activeTab = uiState.activeTab,
+                                onAudioClick = viewModel::openAudioDialog,
+                                onTabSelected = viewModel::onTabSelected,
+                                onEditBoundsChanged = { editTabAnchorBounds = it },
+                                onNewBoundsChanged = { newTabAnchorBounds = it },
+                                onInfoBoundsChanged = { infoAnchorBounds = it },
+                                onAddBoundsChanged = { addAnchorBounds = it },
+                                onInfoClick = viewModel::toggleInfoPopover,
+                                onAddClick = viewModel::toggleAddPopover
+                            )
+                        }
                     }
                 }
             }
@@ -341,79 +653,166 @@ fun WorkspaceScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)
-                    .statusBarsPadding()
             ) {
                 val isLandscapeOrWide = maxWidth > 620.dp
 
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .widthIn(max = 760.dp)
                     .align(Alignment.Center),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Clean Video Star iOS top bar: circular dark X close button only (no intrusive header pill)
-                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp)
-                    ) {
+                // Top Bar: Top-left Layout Switcher (hidden strictly when Editing/Effect Mode is active) + Top-right Close (X)
+                val usesCustomAeTopBar = activeLayout == StudioLayoutMode.AFTER_EFFECTS &&
+                    !uiState.isTrimMode &&
+                    !uiState.isSplitMode &&
+                    !uiState.isSelectionMode
+                if (!usesCustomAeTopBar) {
+                    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                         Box(
                             modifier = Modifier
-                                .align(Alignment.CenterEnd)
-                                .size(48.dp)
-                                .padding(6.dp)
-                                .clip(CircleShape)
-                                .background(VideoStarScrimDark)
-                                .iosPressable {
-                                    viewModel.saveBeforeClose()
-                                    onCloseToHome()
-                                }
-                                .testTag("workspace_close_button"),
-                            contentAlignment = Alignment.Center
+                                .fillMaxWidth()
+                                .statusBarsPadding()
+                                .padding(horizontal = 14.dp, vertical = 4.dp)
+                                .graphicsLayer { alpha = chromeAlpha }
                         ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Close,
-                                contentDescription = stringResource(R.string.cd_close_workspace),
-                                tint = VideoStarWhite,
-                                modifier = Modifier.size(20.dp)
-                            )
+                            if (!uiState.isInEditingOrEffectMode && !isAeOverlayInEffectMode) {
+                                LayoutSwitcherPillButton(
+                                    activeLayout = activeLayout,
+                                    onClick = viewModel::openLayoutModal,
+                                    modifier = Modifier.align(Alignment.CenterStart)
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.align(Alignment.CenterEnd),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (!uiState.isTrimMode && !uiState.isSplitMode && !uiState.isSelectionMode) {
+                                    Surface(
+                                        color = if (isDarkWorkspaceLayout) Color(0xFF1E2130) else VideoStarScrimDark,
+                                        shape = CircleShape,
+                                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
+                                        modifier = Modifier
+                                            .height(36.dp)
+                                            .clip(CircleShape)
+                                            .iosPressable { studioCallbacks.onOpenShaderGallery() }
+                                            .testTag("workspace_shader_gallery_button")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 11.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.GridView,
+                                                contentDescription = "معرض 145 شادر",
+                                                tint = VideoStarMagenta,
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                            Text(
+                                                text = "145 FX",
+                                                fontFamily = InterFontFamily,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 11.sp,
+                                                color = VideoStarWhite
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Box(
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .padding(6.dp)
+                                        .clip(CircleShape)
+                                        .background(if (isDarkWorkspaceLayout) Color(0xFF282A36) else VideoStarScrimDark)
+                                        .iosPressable {
+                                            viewModel.saveBeforeClose()
+                                            onCloseToHome()
+                                        }
+                                        .testTag("workspace_close_button"),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Close,
+                                        contentDescription = stringResource(R.string.cd_close_workspace),
+                                        tint = VideoStarWhite,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
 
-                // Centered Preview Canvas Area
-                Box(
+                when {
+                    activeLayout == StudioLayoutMode.CAPCUT && !uiState.isTrimMode && !uiState.isSplitMode && !uiState.isSelectionMode -> {
+                        CapCutWorkspaceContent(
+                            project = project,
+                            uiState = uiState,
+                            showShutterFlash = showShutterFlash,
+                            isLandscapeOrWide = isLandscapeOrWide,
+                            callbacks = studioCallbacks,
+                            modifier = Modifier.weight(1f),
+                            chromeAlpha = chromeAlpha
+                        )
+                    }
+                    activeLayout == StudioLayoutMode.BLURRR && !uiState.isTrimMode && !uiState.isSplitMode && !uiState.isSelectionMode -> {
+                        BlurrrWorkspaceContent(
+                            project = project,
+                            uiState = uiState,
+                            showShutterFlash = showShutterFlash,
+                            isLandscapeOrWide = isLandscapeOrWide,
+                            callbacks = studioCallbacks,
+                            modifier = Modifier.weight(1f),
+                            chromeAlpha = chromeAlpha
+                        )
+                    }
+                    activeLayout == StudioLayoutMode.NODE_VIDEO && !uiState.isTrimMode && !uiState.isSplitMode && !uiState.isSelectionMode -> {
+                        NodeVideoWorkspaceContent(
+                            project = project,
+                            uiState = uiState,
+                            showShutterFlash = showShutterFlash,
+                            isLandscapeOrWide = isLandscapeOrWide,
+                            callbacks = studioCallbacks,
+                            modifier = Modifier.weight(1f),
+                            chromeAlpha = chromeAlpha
+                        )
+                    }
+                    activeLayout == StudioLayoutMode.AFTER_EFFECTS && !uiState.isTrimMode && !uiState.isSplitMode && !uiState.isSelectionMode -> {
+                        AfterEffectsWorkspaceContent(
+                            project = project,
+                            uiState = uiState,
+                            showShutterFlash = showShutterFlash,
+                            callbacks = studioCallbacks,
+                            modifier = Modifier.weight(1f),
+                            chromeAlpha = chromeAlpha
+                        )
+                    }
+                    else -> {
+                        // NOVA (Classic StarStudio Canvas + Scrubber/Timeline)
+                // Centered Preview Canvas Area (maximizes screen fill cleanly for every aspect ratio)
+                BoxWithConstraints(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 4.dp),
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    val ratioModifier = when (project.aspectRatio) {
-                        AspectRatioMode.SQUARE -> Modifier
-                            .fillMaxWidth(if (isLandscapeOrWide) 0.55f else 0.92f)
-                            .aspectRatio(1f)
-                        AspectRatioMode.PORTRAIT -> Modifier
-                            .fillMaxHeight(0.95f)
-                            .aspectRatio(9f / 16f, matchHeightConstraintsFirst = true)
-                        AspectRatioMode.PORTRAIT_3_4 -> Modifier
-                            .fillMaxHeight(0.92f)
-                            .aspectRatio(3f / 4f, matchHeightConstraintsFirst = true)
-                        AspectRatioMode.PORTRAIT_4_5 -> Modifier
-                            .fillMaxHeight(0.92f)
-                            .aspectRatio(4f / 5f, matchHeightConstraintsFirst = true)
-                        AspectRatioMode.LANDSCAPE_4_3 -> Modifier
-                            .fillMaxWidth(0.94f)
-                            .aspectRatio(4f / 3f)
-                        AspectRatioMode.LANDSCAPE -> Modifier
-                            .fillMaxWidth(0.96f)
-                            .aspectRatio(16f / 9f)
+                    val targetAspect = project.aspectRatio.ratio.coerceAtLeast(0.25f)
+                    val hFromW = maxWidth / targetAspect
+                    val (stageW, stageH) = if (hFromW <= maxHeight) {
+                        maxWidth to hFromW
+                    } else {
+                        (maxHeight * targetAspect) to maxHeight
                     }
 
                     Box(
-                        modifier = ratioModifier
+                        modifier = Modifier
+                            .size(width = stageW, height = stageH)
+                            .onGloballyPositioned { previewBoundsInRoot = it.boundsInRoot() }
                             .shadow(10.dp, RoundedCornerShape(4.dp))
                             .clip(RoundedCornerShape(4.dp))
                             .background(VideoStarBlack)
@@ -524,6 +923,12 @@ fun WorkspaceScreen(
                 }
 
                 // Multi-Select Controls Bar when Select Mode is active
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .graphicsLayer { alpha = chromeAlpha },
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
                 if (uiState.isSelectionMode && project.scenes.isNotEmpty()) {
                     MultiSceneSelectActionBar(
                         selectedCount = uiState.selectedSceneIndices.size,
@@ -575,6 +980,8 @@ fun WorkspaceScreen(
                         onStepForward = viewModel::stepForward,
                         sceneBoundaryProgresses = uiState.sceneBoundaryProgresses,
                         onThumbBoundsChanged = { thumbAnchorBounds = it },
+                        onBeginScrubbing = viewModel::beginScrubbing,
+                        onEndScrubbing = viewModel::endScrubbing,
                         onSnapshotClick = {
                             sharedProjectViewModel.captureSnapshotToGallery(
                                 context = context,
@@ -588,10 +995,49 @@ fun WorkspaceScreen(
                         modifier = Modifier.padding(vertical = 4.dp)
                     )
                 }
+                }
+                    }
+                }
             }
         }
         }
+
+        // Multi-stage neon-green Blueprint Wireframe transition overlay wrapping preview cutout
+        BlueprintLayoutTransitionHost(
+            request = transitionRequest,
+            previewBoundsInRoot = previewBoundsInRoot,
+            rootOffsetInRoot = rootOffsetInRoot,
+            onCommitTargetLayout = { target ->
+                viewModel.selectStudioLayout(target)
+            },
+            onTransitionFinished = {
+                transitionRequest = null
+            },
+            onChromeAlphaChanged = { alpha ->
+                chromeAlpha = alpha
+            }
+        )
     }
+
+    // Dark "Layout" Selector Modal Sheet (accessible strictly when not in Editing/Effect Mode)
+    StudioLayoutSelectorModal(
+        visible = uiState.isLayoutModalVisible && !uiState.isInEditingOrEffectMode && !isAeOverlayInEffectMode,
+        activeLayout = activeLayout,
+        onSelectLayout = { targetLayout ->
+            viewModel.dismissLayoutModal()
+            if (targetLayout != activeLayout) {
+                transitionSeq += 1L
+                transitionRequest = BlueprintTransitionRequest(
+                    id = transitionSeq,
+                    fromLayout = activeLayout,
+                    toLayout = targetLayout
+                )
+            } else {
+                viewModel.selectStudioLayout(targetLayout)
+            }
+        },
+        onDismiss = viewModel::dismissLayoutModal
+    )
 
     // 1. Timeline Split Popover anchored directly above the white circular thumb
     VideoStarPopover(
@@ -717,7 +1163,9 @@ fun WorkspaceScreen(
                 onOpenReEffect = { indices -> onOpenReEffect(projectId, indices) },
                 onOpenTransform = { sceneIdx -> onOpenTransform(projectId, sceneIdx) },
                 onOpenMix = { sceneIdx -> onOpenMix(projectId, sceneIdx) },
-                onOpenLayers = { onOpenLayers(projectId) },
+                onOpenLayers = {
+                    onOpenLayersForScene?.invoke(projectId, uiState.activeSceneIndex) ?: onOpenLayers(projectId)
+                },
                 onOpenTiming = { _ ->
                     viewModel.openTimingWithClipModeCheck { sceneIdx ->
                         onOpenTiming(projectId, sceneIdx)
@@ -1027,30 +1475,36 @@ private fun SceneThumbnailsStrip(
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState())
                 .padding(horizontal = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             scenes.forEachIndexed { index, scene ->
                 val isSelected = if (isSelectionMode) index in selectedIndices else index == activeSceneIndex
+                val hasAppliedEdits = scene.resolvedEffectPasses().isNotEmpty() || scene.isMultiLayerComposite
                 val borderColor = when {
                     isSelectionMode && isSelected -> ClassicGreen
                     isSelected -> ClassicRed
                     else -> VideoStarIosDivider
                 }
+                val cardBg = when {
+                    isSelectionMode && isSelected -> ClassicGreen.copy(alpha = 0.08f)
+                    isSelected -> VideoStarWhite
+                    else -> VideoStarWhite.copy(alpha = 0.78f)
+                }
                 Row(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(if (isSelected) VideoStarWhite else VideoStarWhite.copy(alpha = 0.72f))
+                        .clip(RoundedCornerShape(7.dp))
+                        .background(cardBg)
                         .border(
-                            width = if (isSelected) 2.dp else 1.dp,
+                            width = if (isSelected) 1.5.dp else 1.dp,
                             color = borderColor,
-                            shape = RoundedCornerShape(8.dp)
+                            shape = RoundedCornerShape(7.dp)
                         )
                         .clickable { onSceneSelected(index) }
-                        .padding(horizontal = 8.dp, vertical = 5.dp)
+                        .padding(horizontal = 6.dp, vertical = 3.dp)
                         .testTag("scene_strip_item_$index"),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     Box {
                         MediaUriThumbnail(
@@ -1059,7 +1513,7 @@ private fun SceneThumbnailsStrip(
                             contentDescription = scene.title,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier
-                                .size(28.dp)
+                                .size(22.dp)
                                 .clip(RoundedCornerShape(4.dp))
                         )
                         if (isSelectionMode && isSelected) {
@@ -1068,24 +1522,37 @@ private fun SceneThumbnailsStrip(
                                 contentDescription = null,
                                 tint = ClassicGreen,
                                 modifier = Modifier
-                                    .size(14.dp)
+                                    .size(12.dp)
                                     .align(Alignment.TopEnd)
                                     .background(VideoStarWhite, CircleShape)
                             )
+                        } else if (hasAppliedEdits) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .align(Alignment.TopEnd)
+                                    .clip(CircleShape)
+                                    .background(VideoStarMagenta)
+                                    .border(0.75.dp, VideoStarWhite, CircleShape)
+                            )
                         }
                     }
-                    Column {
+                    Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
                         Text(
                             text = scene.title,
                             fontFamily = InterFontFamily,
                             fontWeight = FontWeight.SemiBold,
-                            fontSize = 11.sp,
+                            fontSize = 10.sp,
+                            lineHeight = 12.sp,
+                            maxLines = 1,
                             color = if (isSelected) borderColor else VideoStarInkDark
                         )
                         Text(
                             text = String.format(Locale.US, "%.1fs", scene.effectiveDurationMs / 1000f),
                             fontFamily = InterFontFamily,
-                            fontSize = 10.sp,
+                            fontSize = 9.sp,
+                            lineHeight = 11.sp,
+                            maxLines = 1,
                             color = VideoStarInkMuted
                         )
                     }

@@ -16,12 +16,15 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import com.example.ui.components.PrecisionRulerDialSlider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -32,10 +35,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.engine.packs.CustomFontRegistry
+import com.example.engine.packs.CustomPackRepository
 import com.example.model.EditorLayer
 import com.example.model.TextLayerSpec
 import com.example.ui.components.IosHairlineDivider
 import com.example.ui.components.iosPressable
+import com.example.ui.screens.packs.PackImportStudioSheet
 import com.example.ui.theme.CairoFontFamily
 import com.example.ui.theme.ClassicGreen
 import com.example.ui.theme.ClassicRed
@@ -78,6 +85,12 @@ fun TextLayerEditor(
     val spec = activeLayer?.textSpec?.let {
         if (it.text.isBlank() && !activeLayer.textOverlay.isNullOrBlank()) it.copy(text = activeLayer.textOverlay) else it
     } ?: TextLayerSpec()
+
+    val importedFonts by CustomPackRepository.importedFonts.collectAsStateWithLifecycle()
+    val allFontOptions = remember(importedFonts) {
+        textFontStyles + CustomFontRegistry.importedFontOptions()
+    }
+    var showFontPackImporter by remember { mutableStateOf(false) }
 
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         Surface(
@@ -131,8 +144,31 @@ fun TextLayerEditor(
                         .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    textFontStyles.forEach { (id, label) ->
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = ClassicGreen.copy(alpha = 0.16f),
+                        border = BorderStroke(0.8.dp, ClassicGreen.copy(alpha = 0.65f)),
+                        modifier = Modifier
+                            .height(34.dp)
+                            .iosPressable { showFontPackImporter = true }
+                            .testTag("text_import_font_btn")
+                    ) {
+                        Box(modifier = Modifier.padding(horizontal = 10.dp), contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "+ خط / XML",
+                                fontFamily = CairoFontFamily,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = ClassicGreen
+                            )
+                        }
+                    }
+
+                    allFontOptions.forEach { (id, label) ->
                         val selected = spec.fontStyleId == id
+                        val customPreviewFont = remember(id, importedFonts) {
+                            CustomFontRegistry.resolveComposeFont(id)?.first
+                        }
                         Surface(
                             shape = RoundedCornerShape(8.dp),
                             color = if (selected) ClassicRed else if (isDarkTheme) Color(0xFF303038) else Color(0xFFF2F2F7),
@@ -145,7 +181,7 @@ fun TextLayerEditor(
                             Box(modifier = Modifier.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
                                 Text(
                                     text = label,
-                                    fontFamily = CairoFontFamily,
+                                    fontFamily = customPreviewFont ?: CairoFontFamily,
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = if (selected) Color.White else primaryText
@@ -182,44 +218,44 @@ fun TextLayerEditor(
 
                 IosHairlineDivider()
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text("الحجم ${spec.fontSizeSp.roundToInt()}", fontFamily = CairoFontFamily, color = mutedText, fontSize = 11.sp)
-                    Slider(
-                        value = spec.fontSizeSp,
-                        onValueChange = { onTextSpecUpdated(spec.copy(fontSizeSp = it)) },
-                        valueRange = 16f..64f,
-                        colors = SliderDefaults.colors(thumbColor = ClassicGreen, activeTrackColor = ClassicGreen),
-                        modifier = Modifier.weight(1f).height(22.dp).testTag("text_size_slider")
-                    )
-                    Text("الحدود", fontFamily = CairoFontFamily, color = mutedText, fontSize = 11.sp)
-                    Slider(
-                        value = spec.strokeWidthPx,
-                        onValueChange = { onTextSpecUpdated(spec.copy(strokeWidthPx = it)) },
-                        valueRange = 0f..8f,
-                        colors = SliderDefaults.colors(thumbColor = ClassicRed, activeTrackColor = ClassicRed),
-                        modifier = Modifier.weight(1f).height(22.dp).testTag("text_stroke_slider")
-                    )
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text("التوهج ${(spec.glowIntensity * 100f).roundToInt()}%", fontFamily = CairoFontFamily, color = mutedText, fontSize = 11.sp)
-                    Slider(
-                        value = spec.glowIntensity,
-                        onValueChange = { onTextSpecUpdated(spec.copy(glowIntensity = it)) },
-                        valueRange = 0f..1f,
-                        colors = SliderDefaults.colors(thumbColor = ClassicRed, activeTrackColor = ClassicRed),
-                        modifier = Modifier.weight(1f).height(22.dp).testTag("text_glow_slider")
-                    )
-                }
+                PrecisionRulerDialSlider(
+                    label = "الحجم",
+                    valueText = "${spec.fontSizeSp.roundToInt()} sp",
+                    value = spec.fontSizeSp,
+                    onValueChange = { onTextSpecUpdated(spec.copy(fontSizeSp = it)) },
+                    valueRange = 16f..64f,
+                    height = 38.dp,
+                    sliderTestTag = "text_size_slider"
+                )
+                PrecisionRulerDialSlider(
+                    label = "الحدود",
+                    valueText = String.format(java.util.Locale.US, "%.1f px", spec.strokeWidthPx),
+                    value = spec.strokeWidthPx,
+                    onValueChange = { onTextSpecUpdated(spec.copy(strokeWidthPx = it)) },
+                    valueRange = 0f..8f,
+                    height = 38.dp,
+                    sliderTestTag = "text_stroke_slider"
+                )
+                PrecisionRulerDialSlider(
+                    label = "التوهج",
+                    valueText = "${(spec.glowIntensity * 100f).roundToInt()}%",
+                    value = spec.glowIntensity,
+                    onValueChange = { onTextSpecUpdated(spec.copy(glowIntensity = it)) },
+                    valueRange = 0f..1f,
+                    height = 38.dp,
+                    sliderTestTag = "text_glow_slider"
+                )
             }
         }
+    }
+
+    if (showFontPackImporter) {
+        PackImportStudioSheet(
+            initialTab = "FONTS",
+            onDismiss = { showFontPackImporter = false },
+            onSelectFontId = { fontId ->
+                onTextSpecUpdated(spec.copy(fontStyleId = fontId))
+            }
+        )
     }
 }

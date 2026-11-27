@@ -42,10 +42,9 @@ import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import com.example.ui.components.PrecisionRulerDialSlider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
@@ -623,18 +622,15 @@ private fun AdjustPhotoDurationBar(
                 }
             }
 
-            Slider(
+            PrecisionRulerDialSlider(
+                label = "المدة (s)",
+                valueText = String.format(Locale.US, "%.1fs", currentSec),
                 value = currentSec,
                 onValueChange = onDurationSecondsChanged,
                 valueRange = 0.5f..10.0f,
-                colors = SliderDefaults.colors(
-                    thumbColor = VideoStarWhite,
-                    activeTrackColor = AdjustVideoMagenta,
-                    inactiveTrackColor = VideoStarWhite.copy(alpha = 0.35f)
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("adjust_photo_duration_slider")
+                defaultValue = 3.0f,
+                height = 40.dp,
+                sliderTestTag = "adjust_photo_duration_slider"
             )
         }
     }

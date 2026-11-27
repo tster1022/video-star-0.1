@@ -221,11 +221,34 @@ object SceneBitmapRenderer {
                         val lp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                             alpha = (layer.opacity * 255).toInt().coerceIn(0, 255)
                         }
-                        canvas.drawBitmap(bmp, m, lp)
+                        val samBmp = if (layer.samCutout.isActive) {
+                            com.example.engine.sam.SamCutoutSegmenter.loadMaskBitmap(layer.samCutout.maskUriString)
+                        } else null
+                        if (samBmp != null) {
+                            val saveId = canvas.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
+                            canvas.drawBitmap(bmp, m, lp)
+                            val scaledMask = Bitmap.createScaledBitmap(samBmp, bmp.width, bmp.height, true)
+                            val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                                xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
+                            }
+                            canvas.drawBitmap(scaledMask, m, maskPaint)
+                            scaledMask.recycle()
+                            samBmp.recycle()
+                            canvas.restoreToCount(saveId)
+                        } else {
+                            canvas.drawBitmap(bmp, m, lp)
+                        }
                         bmp.recycle()
                     }
                 }
-                val txt = layer.effectiveText
+                val rawTxt = layer.effectiveText
+                val durSec = ((layer.mediaClip?.effectiveDurationMs ?: scene.effectiveDurationMs) / 1000f).coerceAtLeast(0.2f)
+                val txt = com.example.engine.effects.shaders.ShaderUniformEvaluator.formatTextForEffects(
+                    baseText = rawTxt,
+                    passes = layer.effectPasses,
+                    progress = localProgress,
+                    durationSec = durSec
+                ).takeIf { rawTxt.isNotBlank() || layer.effectPasses.any { p -> p.isEnabled && p.effectId.startsWith("am_text_") } } ?: ""
                 if (txt.isNotBlank()) {
                     val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                         color = layer.textSpec.textColorArgb.toInt()

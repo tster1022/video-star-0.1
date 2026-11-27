@@ -51,9 +51,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.model.MotionPreset
 import com.example.ui.components.EffectAnimatedSampleCard
 import com.example.ui.components.IosHairlineDivider
-import com.example.ui.components.IosThinSlider
+import com.example.ui.components.PrecisionGoldAccent
+import com.example.ui.components.PrecisionRulerDialSlider
 import com.example.ui.components.SampleCardKind
 import com.example.ui.components.SceneRenderStage
+import com.example.ui.components.rememberStudioTickHaptics
 import com.example.ui.components.geometricTriangleBackground
 import com.example.ui.components.iosPressable
 import com.example.ui.components.rememberSceneSampleThumbnail
@@ -273,16 +275,17 @@ fun MotionScreen(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
+                            val haptics = rememberStudioTickHaptics()
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = String.format(Locale.US, "Speed: %.2fx", uiState.speed),
+                                    text = "Motion Parameters",
                                     fontFamily = SfProDisplayFontFamily,
                                     color = AdjustVideoTitleDark,
                                     fontSize = 12.sp,
@@ -295,40 +298,36 @@ fun MotionScreen(
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     modifier = Modifier
-                                        .iosPressable(onClick = viewModel::resetMotion)
+                                        .iosPressable {
+                                            haptics.pulseSelection()
+                                            viewModel.resetMotion()
+                                        }
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
                                 )
                             }
-                            IosThinSlider(
+                            PrecisionRulerDialSlider(
+                                label = "Speed",
+                                valueText = String.format(Locale.US, "%.2fx", uiState.speed),
                                 value = uiState.speed,
                                 onValueChange = viewModel::updateSpeed,
                                 valueRange = 0.2f..3.0f,
-                                activeTrackColor = ClassicGreen,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(34.dp)
-                                    .testTag("motion_speed_slider")
+                                defaultValue = 1.0f,
+                                accentColor = PrecisionGoldAccent,
+                                height = 42.dp,
+                                sliderTestTag = "motion_speed_slider"
                             )
 
-                            IosHairlineDivider()
-
-                            Text(
-                                text = "Amount: ${(uiState.intensity * 100f).roundToInt()}%",
-                                fontFamily = SfProDisplayFontFamily,
-                                color = AdjustVideoTitleDark,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            IosThinSlider(
+                            PrecisionRulerDialSlider(
+                                label = "Amount",
+                                valueText = "${(uiState.intensity * 100f).roundToInt()}%",
                                 value = uiState.intensity,
                                 onValueChange = viewModel::updateIntensity,
                                 valueRange = 0f..1f,
+                                defaultValue = 0.5f,
                                 enabled = uiState.preset != MotionPreset.NONE,
-                                activeTrackColor = ClassicRed,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(34.dp)
-                                    .testTag("motion_intensity_slider")
+                                accentColor = PrecisionGoldAccent,
+                                height = 42.dp,
+                                sliderTestTag = "motion_intensity_slider"
                             )
                         }
                     }

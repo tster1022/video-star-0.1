@@ -1,16 +1,29 @@
 package com.example.gl
 
+import com.example.engine.effects.shaders.DistortionWarpShaders
+import com.example.engine.effects.shaders.MatteMaskKeyShaders
+import com.example.engine.effects.shaders.MoveTransformShaders
+import com.example.engine.effects.shaders.OpacityVisibilityShaders
+import com.example.engine.effects.shaders.ProceduralShaders
+import com.example.engine.effects.shaders.RepeatShaders
+import com.example.engine.effects.shaders.ShaderCommonGlsl
+import com.example.engine.effects.shaders.TextAndOtherShaders
+import com.example.engine.effects.shaders.ThreeDShaders
 import com.example.model.EffectCatalog
 import com.example.model.ShaderEffectPass
 
 /**
- * Shared GLSL ES 3.00 Vertex & Fragment Shader library for all 35 Video Star GPU effects.
+ * Shared GLSL ES 3.00 Vertex & Fragment Shader library for all 145 GPU effects
+ * (35 Video Star + 110 Alight Motion across 9 categories).
  * Used identically by the live OpenGL ES 3.0 preview renderer (VideoStarGlRenderer) and
  * Jetpack Media3 Transformer GPU export (Media3ShaderEffect).
  */
 object ShaderLibrary {
 
-    val supportedEffectIds: Set<String> = EffectCatalog.shaderEffects.map { it.id }.toSet()
+    val supportedEffectIds: Set<String>
+        get() = (EffectCatalog.shaderEffects.map { it.id } +
+            EffectCatalog.alightMotionEffects.map { it.id } +
+            com.example.engine.packs.CustomPackRepository.dynamicCatalogItems().map { it.id }).toSet()
 
     const val VERTEX_SHADER_2D = """#version 300 es
 layout(location = 0) in vec4 aPosition;
@@ -38,8 +51,23 @@ void main() {
 }
 """
 
+    const val SOURCE_VERTEX_SHADER_COMPAT = """
+attribute vec4 aPosition;
+attribute vec4 aTexCoord;
+varying vec2 vSceneUv;
+varying vec2 vTexCoord;
+uniform mat4 uTexMatrix;
+uniform mat4 uSourceTexMatrix;
+void main() {
+    gl_Position = aPosition;
+    vec4 sceneCoord = uTexMatrix * aTexCoord;
+    vSceneUv = sceneCoord.xy;
+    vTexCoord = (uSourceTexMatrix * sceneCoord).xy;
+}
+"""
+
     const val PASSTHROUGH_OES_FRAGMENT_SHADER = """#version 300 es
-#extension GL_OES_EGL_image_external_OES : require
+#extension GL_OES_EGL_image_external_essl3 : require
 precision highp float;
 in vec2 vSceneUv;
 in vec2 vTexCoord;
@@ -51,7 +79,25 @@ void main() {
         outColor = uBgColor;
         return;
     }
-    outColor = texture(uOesTexture, vTexCoord);
+    vec4 tex = texture(uOesTexture, vTexCoord);
+    outColor = vec4(tex.rgb, 1.0);
+}
+"""
+
+    const val PASSTHROUGH_OES_FRAGMENT_SHADER_COMPAT = """
+#extension GL_OES_EGL_image_external : require
+precision highp float;
+varying vec2 vSceneUv;
+varying vec2 vTexCoord;
+uniform samplerExternalOES uOesTexture;
+uniform vec4 uBgColor;
+void main() {
+    if (vSceneUv.x < 0.0 || vSceneUv.x > 1.0 || vSceneUv.y < 0.0 || vSceneUv.y > 1.0) {
+        gl_FragColor = uBgColor;
+        return;
+    }
+    vec4 tex = texture2D(uOesTexture, vTexCoord);
+    gl_FragColor = vec4(tex.rgb, 1.0);
 }
 """
 
@@ -71,13 +117,275 @@ void main() {
 }
 """
 
-    fun hasShader(effectId: String): Boolean =
-        EffectCatalog.resolveCanonicalId(effectId) in supportedEffectIds
+    const val PASSTHROUGH_2D_FRAGMENT_SHADER_COMPAT = """
+precision highp float;
+varying vec2 vSceneUv;
+varying vec2 vTexCoord;
+uniform sampler2D uTexture;
+uniform vec4 uBgColor;
+void main() {
+    if (vSceneUv.x < 0.0 || vSceneUv.x > 1.0 || vSceneUv.y < 0.0 || vSceneUv.y > 1.0) {
+        gl_FragColor = uBgColor;
+        return;
+    }
+    gl_FragColor = texture2D(uTexture, vTexCoord);
+}
+"""
+
+    const val SAM_MASK_APPLY_FRAGMENT_SHADER = """#version 300 es
+precision highp float;
+in vec2 vSceneUv;
+in vec2 vTexCoord;
+uniform sampler2D uTexture;
+uniform sampler2D uMaskTex;
+uniform float uFeather;
+uniform int uInvertMask;
+out vec4 outColor;
+void main() {
+    vec4 src = texture(uTexture, clamp(vTexCoord, 0.0, 1.0));
+    vec4 m = texture(uMaskTex, clamp(vTexCoord, 0.0, 1.0));
+    float a = m.a;
+    if (uInvertMask == 1) a = 1.0 - a;
+    float edge = smoothstep(0.05, max(0.08, 0.2 + uFeather * 0.6), a);
+    outColor = vec4(src.rgb, src.a * clamp(edge, 0.0, 1.0));
+}
+"""
+
+    const val PASSTHROUGH_PREMULT_2D_FRAGMENT_SHADER = """#version 300 es
+precision highp float;
+in vec2 vSceneUv;
+in vec2 vTexCoord;
+uniform sampler2D uTexture;
+uniform vec4 uBgColor;
+out vec4 outColor;
+void main() {
+    vec4 tex = (vSceneUv.x < 0.0 || vSceneUv.x > 1.0 || vSceneUv.y < 0.0 || vSceneUv.y > 1.0)
+        ? uBgColor
+        : texture(uTexture, vTexCoord);
+    outColor = vec4(tex.rgb * tex.a, tex.a);
+}
+"""
+
+    const val PASSTHROUGH_PREMULT_2D_FRAGMENT_SHADER_COMPAT = """
+precision highp float;
+varying vec2 vSceneUv;
+varying vec2 vTexCoord;
+uniform sampler2D uTexture;
+uniform vec4 uBgColor;
+void main() {
+    vec4 tex = (vSceneUv.x < 0.0 || vSceneUv.x > 1.0 || vSceneUv.y < 0.0 || vSceneUv.y > 1.0)
+        ? uBgColor
+        : texture2D(uTexture, vTexCoord);
+    gl_FragColor = vec4(tex.rgb * tex.a, tex.a);
+}
+"""
+
+    const val COMPOSITE_VERTEX_SHADER_3D = """#version 300 es
+layout(location = 0) in vec4 aPosition;
+layout(location = 1) in vec4 aTexCoord;
+out vec2 vTexCoord;
+out vec2 vBaseUv;
+uniform mat4 uMvpMatrix;
+uniform mat4 uTexMatrix;
+void main() {
+    vec4 clip = uMvpMatrix * aPosition;
+    gl_Position = clip;
+    vTexCoord = (uTexMatrix * aTexCoord).xy;
+    float wSafe = (abs(clip.w) > 0.0001) ? clip.w : 1.0;
+    vBaseUv = (clip.xy / wSafe) * 0.5 + 0.5;
+}
+"""
+
+    const val MASK_SHAPE_FRAGMENT_SHADER = """#version 300 es
+precision highp float;
+in vec2 vSceneUv;
+in vec2 vTexCoord;
+uniform sampler2D uTexture;
+uniform int uMaskMode;
+uniform int uMaskShape;
+uniform float uFeather;
+uniform int uInvertMask;
+uniform float uAngleRad;
+uniform float uAspect;
+out vec4 outColor;
+
+float sdCircle(vec2 p, float r) {
+    return length(p) - r;
+}
+
+float sdRoundedBox(vec2 p, vec2 b, float r) {
+    vec2 q = abs(p) - b + vec2(r);
+    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
+}
+
+float sdDiamond(vec2 p, vec2 b) {
+    p = abs(p);
+    return (p.x * b.y + p.y * b.x - b.x * b.y) / max(length(b), 0.0001);
+}
+
+float sdTriangle(vec2 p, float r) {
+    const float k = sqrt(3.0);
+    p.x = abs(p.x) - r;
+    p.y = p.y + r / k;
+    if (p.x + k * p.y > 0.0) p = vec2(p.x - k * p.y, -k * p.x - p.y) * 0.5;
+    p.x -= clamp(p.x, -2.0 * r, 0.0);
+    return -length(p) * sign(p.y);
+}
+
+float sdStar5(vec2 p, float r, float rf) {
+    const vec2 k1 = vec2(0.809016994, -0.587785252);
+    const vec2 k2 = vec2(-k1.x, k1.y);
+    p.x = abs(p.x);
+    p -= 2.0 * max(dot(k1, p), 0.0) * k1;
+    p -= 2.0 * max(dot(k2, p), 0.0) * k2;
+    p.x = abs(p.x);
+    p.y -= r;
+    vec2 ba = rf * vec2(-k1.y, k1.x) - vec2(0.0, 1.0);
+    float h = clamp(dot(p, ba) / dot(ba, ba), 0.0, r);
+    return length(p - ba * h) * sign(p.y * ba.x - p.x * ba.y);
+}
+
+float sdHeart(vec2 p) {
+    p.x = abs(p.x);
+    p.y = -p.y + 0.35;
+    if (p.y + p.x > 1.0) {
+        return sqrt(dot(p - vec2(0.25, 0.75), p - vec2(0.25, 0.75))) - 0.35355339;
+    }
+    return sqrt(min(
+        dot(p - vec2(0.0, 1.0), p - vec2(0.0, 1.0)),
+        dot(p - 0.5 * max(p.x + p.y, 0.0), p - 0.5 * max(p.x + p.y, 0.0))
+    )) * sign(p.x - p.y);
+}
+
+void main() {
+    vec2 uv = clamp(vTexCoord, 0.0, 1.0);
+    vec4 src = texture(uTexture, uv);
+    if (uMaskMode == 0 || (uMaskMode == 1 && uMaskShape == 0)) {
+        outColor = src;
+        return;
+    }
+    vec2 p = uv - 0.5;
+    p.x *= max(uAspect, 0.2);
+    float d = -1.0;
+    if (uMaskMode == 2) {
+        vec2 dir = vec2(cos(uAngleRad), sin(uAngleRad));
+        d = dot(p, dir);
+    } else {
+        float minSpan = min(max(uAspect, 0.2), 1.0) * 0.42;
+        if (uMaskShape == 1) {
+            d = sdCircle(p, minSpan);
+        } else if (uMaskShape == 2) {
+            d = sdRoundedBox(p, vec2(minSpan * 0.95), minSpan * 0.24);
+        } else if (uMaskShape == 3) {
+            d = sdHeart(p / max(minSpan * 1.45, 0.001)) * minSpan;
+        } else if (uMaskShape == 4) {
+            d = sdStar5(vec2(p.x, -p.y), minSpan * 1.05, 0.46);
+        } else if (uMaskShape == 5) {
+            d = sdTriangle(vec2(p.x, -p.y + minSpan * 0.15), minSpan * 0.95);
+        } else {
+            d = sdDiamond(p, vec2(minSpan));
+        }
+    }
+    float feather = max(0.006, uFeather * 0.22);
+    float maskAlpha = 1.0 - smoothstep(-feather, feather, d);
+    if (uInvertMask == 1) maskAlpha = 1.0 - maskAlpha;
+    outColor = vec4(src.rgb, src.a * clamp(maskAlpha, 0.0, 1.0));
+}
+"""
+
+    const val COMPOSITE_BLEND_FRAGMENT_SHADER = """#version 300 es
+precision highp float;
+in vec2 vTexCoord;
+in vec2 vBaseUv;
+uniform sampler2D uTexture;
+uniform sampler2D uBaseTex;
+uniform float uOpacity;
+uniform int uBlendMode;
+uniform float uBorderWidthUv;
+uniform vec4 uBorderColor;
+uniform vec2 uShadowOffsetUv;
+uniform float uShadowOpacity;
+out vec4 outColor;
+
+vec3 compositeBlendRgb(vec3 baseRgb, vec3 topRgb, int mode) {
+    if (mode == 1) return clamp(baseRgb + topRgb, 0.0, 1.0);
+    if (mode == 2) return baseRgb * topRgb;
+    if (mode == 3) return 1.0 - (1.0 - baseRgb) * (1.0 - topRgb);
+    if (mode == 4) {
+        return mix(
+            2.0 * baseRgb * topRgb,
+            1.0 - 2.0 * (1.0 - baseRgb) * (1.0 - topRgb),
+            step(0.5, baseRgb)
+        );
+    }
+    return topRgb;
+}
+
+void main() {
+    vec4 base = texture(uBaseTex, clamp(vBaseUv, 0.0, 1.0));
+    if (vTexCoord.x < 0.0 || vTexCoord.x > 1.0 || vTexCoord.y < 0.0 || vTexCoord.y > 1.0) {
+        outColor = base;
+        return;
+    }
+    vec4 top = texture(uTexture, vTexCoord);
+    vec3 outRgb = base.rgb;
+    float outA = base.a;
+
+    // Optional soft drop shadow from layer alpha
+    if (uShadowOpacity > 0.01) {
+        vec2 shUv = vTexCoord - uShadowOffsetUv;
+        float shSample = (shUv.x >= 0.0 && shUv.x <= 1.0 && shUv.y >= 0.0 && shUv.y <= 1.0)
+            ? texture(uTexture, shUv).a
+            : 0.0;
+        float shA = clamp(shSample * uShadowOpacity * uOpacity * 0.72, 0.0, 1.0);
+        outRgb = mix(outRgb, vec3(0.0), shA);
+        outA = max(outA, shA);
+    }
+
+    // Optional layer frame border
+    if (uBorderWidthUv > 0.0005) {
+        float edgeDist = min(min(vTexCoord.x, 1.0 - vTexCoord.x), min(vTexCoord.y, 1.0 - vTexCoord.y));
+        if (edgeDist < uBorderWidthUv) {
+            float bA = clamp(uBorderColor.a * uOpacity, 0.0, 1.0);
+            outRgb = mix(outRgb, uBorderColor.rgb, bA);
+            outA = max(outA, bA);
+        }
+    }
+
+    float sa = clamp(top.a * uOpacity, 0.0, 1.0);
+    if (sa > 0.0001) {
+        vec3 bRgb = compositeBlendRgb(clamp(outRgb, 0.0, 1.0), clamp(top.rgb, 0.0, 1.0), uBlendMode);
+        float nextA = sa + outA * (1.0 - sa);
+        outRgb = (bRgb * sa + outRgb * outA * (1.0 - sa)) / max(nextA, 0.0001);
+        outA = nextA;
+    }
+    outColor = vec4(clamp(outRgb, 0.0, 1.0), clamp(outA, 0.0, 1.0));
+}
+"""
+
+    fun hasShader(effectId: String): Boolean {
+        val canonical = EffectCatalog.resolveCanonicalId(effectId)
+        return canonical in effectBodies || com.example.engine.packs.CustomPackRepository.hasCustomEffect(canonical)
+    }
 
     fun fragmentShaderFor(effectId: String): String {
         val canonical = EffectCatalog.resolveCanonicalId(effectId)
-        val body = effectBodies[canonical] ?: "vec4 c = sampleMirrored(uv);"
-        return buildFragmentShader(body)
+        com.example.engine.packs.CustomPackRepository.findCustomShaderFragmentSource(canonical)?.let {
+            return it
+        }
+        val mappedFallback = com.example.engine.packs.CustomPackRepository.findFallbackEffectId(canonical)
+        val body = effectBodies[canonical]
+            ?: mappedFallback?.let { effectBodies[EffectCatalog.resolveCanonicalId(it)] }
+            ?: "vec4 c = sampleMirrored(uv);"
+        return ShaderCommonGlsl.buildFragmentShader(body)
+    }
+
+    fun fallbackShaderFor(effectId: String): String {
+        val canonical = EffectCatalog.resolveCanonicalId(effectId)
+        val fb = com.example.engine.packs.CustomPackRepository.findFallbackEffectId(canonical)
+            ?: "ripple"
+        val fbBody = effectBodies[EffectCatalog.resolveCanonicalId(fb)] ?: "vec4 c = sampleMirrored(uv);"
+        return ShaderCommonGlsl.buildFragmentShader(fbBody)
     }
 
     fun extractUniformParams(pass: ShaderEffectPass, progress: Float = 0f): FloatArray {
@@ -93,74 +401,6 @@ void main() {
         } ?: 0.5f
         return floatArrayOf(p1, p2, p3)
     }
-
-    private fun buildFragmentShader(body: String): String = """#version 300 es
-precision highp float;
-in vec2 vTexCoord;
-uniform sampler2D uTexture;
-uniform vec2 uTexSize;
-uniform float uTime;
-uniform float uIntensity;
-uniform float uParam1;
-uniform float uParam2;
-uniform float uParam3;
-uniform vec4 uTintColor;
-uniform int uBlendMode;
-out vec4 outColor;
-
-vec3 applyBlendMode(vec3 base, vec3 top, int mode) {
-    if (mode == 1) return clamp(base + top, 0.0, 1.0);
-    if (mode == 2) return base * top;
-    if (mode == 3) return 1.0 - (1.0 - base) * (1.0 - top);
-    if (mode == 4) {
-        return mix(2.0 * base * top, 1.0 - 2.0 * (1.0 - base) * (1.0 - top), step(0.5, base));
-    }
-    return top;
-}
-
-float hash12(vec2 p) {
-    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.x + p3.y) * p3.z);
-}
-
-vec2 mirrorUv(vec2 p) {
-    vec2 m = mod(p, 2.0);
-    return vec2(
-        m.x > 1.0 ? 2.0 - m.x : m.x,
-        m.y > 1.0 ? 2.0 - m.y : m.y
-    );
-}
-
-vec4 sampleMirrored(vec2 p) {
-    return texture(uTexture, mirrorUv(p));
-}
-
-vec3 rgb2hsv(vec3 c) {
-    vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
-    vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
-    vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
-    float d = q.x - min(q.w, q.y);
-    float e = 1.0e-10;
-    return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
-}
-
-vec3 hsv2rgb(vec3 c) {
-    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
-    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-}
-
-void main() {
-    vec2 uv = clamp(vTexCoord, 0.0, 1.0);
-    float k = clamp(uIntensity, 0.0, 1.0);
-    vec4 orig = texture(uTexture, uv);
-    vec4 c = orig;
-    $body
-    vec3 blended = applyBlendMode(orig.rgb, clamp(c.rgb, 0.0, 1.0), uBlendMode);
-    outColor = vec4(mix(orig.rgb, blended, k), orig.a);
-}
-"""
 
     private val effectBodies: Map<String, String> = mapOf(
         // 1. Shake & Motion (6)
@@ -499,5 +739,13 @@ void main() {
             vec3 col = mix(vec3(0.06), sampleCol.rgb * (0.85 + uParam2 * 0.45), dotVal);
             c = vec4(col, orig.a);
         """.trimIndent()
-    )
+    ) +
+        MoveTransformShaders.bodies +
+        DistortionWarpShaders.bodies +
+        MatteMaskKeyShaders.bodies +
+        OpacityVisibilityShaders.bodies +
+        ProceduralShaders.bodies +
+        RepeatShaders.bodies +
+        ThreeDShaders.bodies +
+        TextAndOtherShaders.bodies
 }

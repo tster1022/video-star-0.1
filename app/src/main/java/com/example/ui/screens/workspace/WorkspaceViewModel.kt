@@ -3,15 +3,28 @@ package com.example.ui.screens.workspace
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.VideoStarRepository
+import com.example.engine.render.StudioRenderErrorBoundary
+import com.example.engine.render.StudioRenderMemoryCoordinator
+import com.example.engine.render.StudioScrubThrottleController
+import com.example.model.AeLayerKind
 import com.example.model.AspectRatioMode
+import com.example.model.EditorLayer
+import com.example.model.EffectCatalog
+import com.example.model.EffectKeyframe
+import com.example.model.LayerKeyframe
 import com.example.model.MediaClip
 import com.example.model.NewClipAction
+import com.example.model.PARAM_KEY_INTENSITY
+import com.example.model.ParameterKeyframe
 import com.example.model.ProjectAudioConfig
+import com.example.model.ShaderEffectPass
+import com.example.model.StudioLayoutMode
 import com.example.model.TimelineScene
 import com.example.model.TimingMode
 import com.example.model.VideoProject
 import com.example.model.WorkspaceTab
 import com.example.model.evaluateVelocityAt
+import kotlin.math.abs
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,7 +33,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 
 enum class ClipModeTrigger {
     TRIM,
@@ -70,10 +86,31 @@ data class WorkspaceUiState(
     val activeSceneIndex: Int = 0,
     val showSceneStrip: Boolean = false,
     val activeDialog: WorkspaceDialogState? = null,
+    val isLayoutModalVisible: Boolean = false,
+    val isInlineEffectMode: Boolean = false,
+    val activeEffectFilterCategory: String = "All",
+    val selectedNodeGraphStage: String = "EFFECTS",
+    val selectedAeLayerId: String? = null,
     val snapshotFlashTrigger: Int = 0,
     val speedMultiplier: Float = 1f,
+    val isScrubbing: Boolean = false,
     val snackbarMessage: String? = null
 ) {
+    val studioLayout: StudioLayoutMode
+        get() = project?.studioLayout ?: StudioLayoutMode.NOVA
+
+    val aeLayers: List<EditorLayer>
+        get() = project?.aeLayers.orEmpty()
+
+    val selectedAeLayer: EditorLayer?
+        get() = selectedAeLayerId?.let { id -> aeLayers.firstOrNull { it.id == id } }
+
+    /**
+     * Strict Mode Rule:
+     * When true (Editing / Effect Mode active), the top-left Layout Switcher trigger MUST stay hidden.
+     */
+    val isInEditingOrEffectMode: Boolean
+        get() = isInlineEffectMode || isTrimMode || isSplitMode || isSelectionMode || activeDialog != null
     val sceneWindows: List<SceneWindow>
         get() {
             val scenes = project?.scenes ?: return emptyList()
@@ -88,9 +125,14 @@ data class WorkspaceUiState(
         }
 
     val totalDurationMs: Long
-        get() = sceneWindows.lastOrNull()?.endMs
-            ?: project?.durationMs?.takeIf { it > 0L }
-            ?: 10_020L
+        get() {
+            if (studioLayout == StudioLayoutMode.AFTER_EFFECTS && aeLayers.isNotEmpty()) {
+                return aeLayers.maxOf { (it.startTimeMs + it.effectiveLayerDurationMs).coerceAtLeast(500L) }
+            }
+            return sceneWindows.lastOrNull()?.endMs
+                ?: project?.durationMs?.takeIf { it > 0L }
+                ?: 10_020L
+        }
 
     val activeWindow: SceneWindow?
         get() {
@@ -126,19 +168,30 @@ class WorkspaceViewModel(private val projectId: String) : ViewModel() {
     val uiState: StateFlow<WorkspaceUiState> = _uiState.asStateFlow()
 
     private var playbackJob: Job? = null
-    private val undoStack = ArrayDeque<List<TimelineScene>>()
-    private val redoStack = ArrayDeque<List<TimelineScene>>()
+    private val playbackSessionToken = AtomicLong(0L)
+    val scrubController = StudioScrubThrottleController(minFrameIntervalMs = 16L)
+
+    fun currentPlaybackSessionId(): Long = playbackSessionToken.get()
+    private data class WorkspaceHistorySnapshot(
+        val scenes: List<TimelineScene>,
+        val aeLayers: List<EditorLayer>
+    )
+    private val undoStack = ArrayDeque<WorkspaceHistorySnapshot>()
+    private val redoStack = ArrayDeque<WorkspaceHistorySnapshot>()
     private var pendingTimingNavigation: ((Int) -> Unit)? = null
 
     private fun pushUndoSnapshot() {
-        val currentScenes = _uiState.value.project?.scenes ?: return
-        undoStack.addLast(currentScenes)
+        val proj = _uiState.value.project ?: return
+        undoStack.addLast(WorkspaceHistorySnapshot(proj.scenes, proj.aeLayers))
         while (undoStack.size > 30) undoStack.removeFirst()
         redoStack.clear()
         _uiState.update { it.copy(canUndo = undoStack.isNotEmpty(), canRedo = false) }
     }
 
     init {
+        if (VideoStarRepository.getProjectById(projectId)?.studioLayout == StudioLayoutMode.AFTER_EFFECTS) {
+            VideoStarRepository.ensureAeLayersHydrated(projectId)
+        }
         VideoStarRepository.projects
             .onEach { projects ->
                 val match = projects.firstOrNull { it.id == projectId }
@@ -147,10 +200,14 @@ class WorkspaceViewModel(private val projectId: String) : ViewModel() {
                     val safeMaxDur = (match?.totalTimelineDurationMs ?: 3000L).coerceAtLeast(500L)
                     val safePos = state.currentPositionMs.coerceIn(0L, safeMaxDur)
                     val nextActiveIdx = resolveSceneIndexAt(match, safePos, state.activeSceneIndex).coerceIn(0, maxSceneIdx)
+                    val validSelectedAe = state.selectedAeLayerId?.takeIf { id ->
+                        match?.aeLayers?.any { it.id == id } == true
+                    }
                     state.copy(
                         project = match,
                         currentPositionMs = safePos,
                         activeSceneIndex = nextActiveIdx,
+                        selectedAeLayerId = validSelectedAe,
                         selectedSceneIndices = state.selectedSceneIndices.filter { it <= maxSceneIdx }.toSet(),
                         showSceneStrip = state.showSceneStrip || state.isSelectionMode || ((match?.scenes?.size ?: 0) > 1)
                     )
@@ -171,79 +228,159 @@ class WorkspaceViewModel(private val projectId: String) : ViewModel() {
         return scenes.lastIndex.coerceAtLeast(0)
     }
 
-    fun togglePlayback() {
-        val state = _uiState.value
-        val nextPlaying = !state.isPlaying
-        _uiState.update { it.copy(isPlaying = nextPlaying) }
+    private fun cancelPlaybackLoopOnly(): Long {
+        val nextToken = playbackSessionToken.incrementAndGet()
         playbackJob?.cancel()
+        playbackJob = null
+        return nextToken
+    }
 
-        if (nextPlaying) {
-            val activeWin = state.activeWindow
-            val isLiveForwardVideo = activeWin != null &&
-                activeWin.scene.isVideo &&
-                !activeWin.scene.isReversed &&
-                !activeWin.scene.timing.freezeFrameEnabled &&
-                !activeWin.scene.isMultiLayerComposite &&
-                activeWin.scene.clip is MediaClip.Video
-
-            if (!isLiveForwardVideo) {
-                startSoftwareTimelineLoop()
-            }
+    fun pausePlayback() {
+        cancelPlaybackLoopOnly()
+        if (_uiState.value.isPlaying) {
+            _uiState.update { it.copy(isPlaying = false) }
         }
     }
 
-    private fun startSoftwareTimelineLoop() {
+    fun beginScrubbing() {
+        cancelPlaybackLoopOnly()
+        scrubController.beginScrub(_uiState.value.currentPositionMs)
+        _uiState.update { it.copy(isPlaying = false, isScrubbing = true) }
+    }
+
+    fun endScrubbing() {
+        scrubController.endScrub()
+        if (_uiState.value.isScrubbing) {
+            _uiState.update { it.copy(isScrubbing = false) }
+        }
+    }
+
+    fun togglePlayback() {
+        val currentState = _uiState.value
+        val nextPlaying = !currentState.isPlaying
+        val sessionToken = cancelPlaybackLoopOnly()
+        scrubController.endScrub()
+
+        if (!nextPlaying) {
+            _uiState.update { it.copy(isPlaying = false, isScrubbing = false) }
+            return
+        }
+
+        val atEnd = currentState.currentPositionMs >= (currentState.totalDurationMs - 40L).coerceAtLeast(100L)
+        val startState = if (atEnd) {
+            _uiState.update {
+                it.copy(
+                    currentPositionMs = 0L,
+                    activeSceneIndex = 0,
+                    isPlaying = true,
+                    isScrubbing = false
+                )
+            }
+            _uiState.value
+        } else {
+            _uiState.update { it.copy(isPlaying = true, isScrubbing = false) }
+            _uiState.value
+        }
+
+        val activeWin = startState.activeWindow
+        val isAeMultiLayer = startState.studioLayout == StudioLayoutMode.AFTER_EFFECTS && startState.aeLayers.isNotEmpty()
+        val isLiveForwardVideo = !isAeMultiLayer &&
+            activeWin != null &&
+            activeWin.scene.isVideo &&
+            !activeWin.scene.isReversed &&
+            !activeWin.scene.timing.freezeFrameEnabled &&
+            !activeWin.scene.isMultiLayerComposite &&
+            activeWin.scene.clip is MediaClip.Video
+
+        if (!isLiveForwardVideo) {
+            startSoftwareTimelineLoop(sessionToken)
+        }
+    }
+
+    private fun startSoftwareTimelineLoop(sessionToken: Long) {
         playbackJob?.cancel()
         playbackJob = viewModelScope.launch {
-            while (_uiState.value.isPlaying) {
+            var lastTickNanos = System.nanoTime()
+            while (
+                isActive &&
+                playbackSessionToken.get() == sessionToken &&
+                _uiState.value.isPlaying
+            ) {
                 val fps = (_uiState.value.project?.frameRate ?: 30).coerceIn(24, 60)
                 val frameTickMs = (1000L / fps).coerceIn(16L, 42L)
                 delay(frameTickMs)
-                val current = _uiState.value
-                val win = current.activeWindow
-                val step = if (win != null) {
-                    val scene = win.scene
-                    val localPos = (current.currentPositionMs - win.startMs).coerceAtLeast(0L)
-                    val localProgress = (localPos.toFloat() / scene.effectiveDurationMs.toFloat()).coerceIn(0f, 1f)
-                    val curveSpeed = evaluateVelocityAt(localProgress, scene.velocityPoints, scene.isVelocitySmooth)
-                    (frameTickMs * current.speedMultiplier * curveSpeed).toLong().coerceAtLeast(8L)
-                } else {
-                    (frameTickMs * current.speedMultiplier).toLong().coerceAtLeast(8L)
-                }
-                val nextGlobal = current.currentPositionMs + step
 
-                if (nextGlobal >= current.totalDurationMs) {
-                    _uiState.update {
-                        it.copy(
-                            currentPositionMs = 0L,
-                            activeSceneIndex = 0,
-                            isPlaying = false
-                        )
-                    }
+                if (!isActive || playbackSessionToken.get() != sessionToken || !_uiState.value.isPlaying) {
                     break
-                } else {
-                    val nextIdx = resolveSceneIndexAt(current.project, nextGlobal, current.activeSceneIndex)
-                    val switchedToNormalVideo = win != null &&
-                        nextIdx != current.activeSceneIndex &&
-                        current.project?.scenes?.getOrNull(nextIdx)?.let { nextSc ->
-                            nextSc.isVideo && !nextSc.isReversed && !nextSc.timing.freezeFrameEnabled && !nextSc.isMultiLayerComposite
-                        } == true
-                    _uiState.update {
-                        it.copy(
-                            currentPositionMs = nextGlobal,
-                            activeSceneIndex = nextIdx
-                        )
+                }
+
+                val nowNanos = System.nanoTime()
+                val elapsedMs = ((nowNanos - lastTickNanos) / 1_000_000L).coerceIn(8L, 50L)
+                lastTickNanos = nowNanos
+
+                val shouldBreak = StudioRenderErrorBoundary.safeEvaluate("playback_loop_tick", true) {
+                    val current = _uiState.value
+                    val isAeMultiLayer = current.studioLayout == StudioLayoutMode.AFTER_EFFECTS && current.aeLayers.isNotEmpty()
+                    val win = current.activeWindow
+                    val step = if (!isAeMultiLayer && win != null) {
+                        val scene = win.scene
+                        val localPos = (current.currentPositionMs - win.startMs).coerceAtLeast(0L)
+                        val localProgress = (localPos.toFloat() / scene.effectiveDurationMs.toFloat()).coerceIn(0f, 1f)
+                        val curveSpeed = evaluateVelocityAt(localProgress, scene.velocityPoints, scene.isVelocitySmooth)
+                        (elapsedMs * current.speedMultiplier * curveSpeed).toLong().coerceAtLeast(8L)
+                    } else {
+                        (elapsedMs * current.speedMultiplier).toLong().coerceAtLeast(8L)
                     }
-                    if (switchedToNormalVideo) {
-                        break
+                    val nextGlobal = current.currentPositionMs + step
+
+                    if (nextGlobal >= current.totalDurationMs) {
+                        if (isAeMultiLayer) {
+                            _uiState.update {
+                                it.copy(
+                                    currentPositionMs = 0L,
+                                    activeSceneIndex = 0,
+                                    isPlaying = true
+                                )
+                            }
+                            false
+                        } else {
+                            _uiState.update {
+                                it.copy(
+                                    currentPositionMs = 0L,
+                                    activeSceneIndex = 0,
+                                    isPlaying = false
+                                )
+                            }
+                            true
+                        }
+                    } else {
+                        val nextIdx = resolveSceneIndexAt(current.project, nextGlobal, current.activeSceneIndex)
+                        val switchedToNormalVideo = !isAeMultiLayer &&
+                            win != null &&
+                            nextIdx != current.activeSceneIndex &&
+                            current.project?.scenes?.getOrNull(nextIdx)?.let { nextSc ->
+                                nextSc.isVideo && !nextSc.isReversed && !nextSc.timing.freezeFrameEnabled && !nextSc.isMultiLayerComposite
+                            } == true
+                        _uiState.update {
+                            it.copy(
+                                currentPositionMs = nextGlobal,
+                                activeSceneIndex = nextIdx
+                            )
+                        }
+                        switchedToNormalVideo
                     }
                 }
+                if (shouldBreak) break
             }
         }
     }
 
     fun syncPositionFromLocalVideo(localPosMs: Long) {
         _uiState.update { state ->
+            if (!state.isPlaying || state.isScrubbing) return@update state
+            if (state.studioLayout == StudioLayoutMode.AFTER_EFFECTS && state.aeLayers.isNotEmpty()) {
+                return@update state
+            }
             val win = state.activeWindow ?: return@update state
             val clampedLocal = localPosMs.coerceIn(0L, win.scene.effectiveDurationMs)
             val globalPos = (win.startMs + clampedLocal).coerceIn(0L, state.totalDurationMs)
@@ -267,10 +404,11 @@ class WorkspaceViewModel(private val projectId: String) : ViewModel() {
             val needsSoftwareClock = !nextScene.isVideo || nextScene.isReversed ||
                 nextScene.timing.freezeFrameEnabled || nextScene.isMultiLayerComposite
             if (current.isPlaying && needsSoftwareClock) {
-                startSoftwareTimelineLoop()
+                val token = cancelPlaybackLoopOnly()
+                startSoftwareTimelineLoop(token)
             }
         } else {
-            playbackJob?.cancel()
+            cancelPlaybackLoopOnly()
             _uiState.update {
                 it.copy(
                     isPlaying = false,
@@ -285,20 +423,33 @@ class WorkspaceViewModel(private val projectId: String) : ViewModel() {
         val state = _uiState.value
         val total = state.totalDurationMs.coerceAtLeast(1L)
         val targetGlobal = (progress.coerceIn(0f, 1f) * total).toLong()
-        val targetIdx = resolveSceneIndexAt(state.project, targetGlobal, state.activeSceneIndex)
+        seekToPositionMs(targetGlobal)
+    }
+
+    fun seekToPositionMs(targetMs: Long) {
+        if (_uiState.value.isPlaying) {
+            cancelPlaybackLoopOnly()
+        }
+        val state = _uiState.value
+        val maxMs = state.totalDurationMs.coerceAtLeast(500L)
+        val clampedMs = targetMs.coerceIn(0L, maxMs)
+        scrubController.requestFrame(clampedMs)
+        val targetIdx = resolveSceneIndexAt(state.project, clampedMs, state.activeSceneIndex)
         _uiState.update {
             it.copy(
-                currentPositionMs = targetGlobal,
-                activeSceneIndex = targetIdx
+                currentPositionMs = clampedMs,
+                activeSceneIndex = targetIdx,
+                isPlaying = false
             )
         }
+        scrubController.completeFrameRender()
     }
 
     /**
      * '<' button: steps backward by 1 frame at the project's selected FPS.
      */
     fun stepBackward() {
-        playbackJob?.cancel()
+        cancelPlaybackLoopOnly()
         _uiState.update { state ->
             val fps = (state.project?.frameRate ?: 30).coerceIn(24, 60)
             val frameStepMs = (1000.0 / fps.toDouble()).toLong().coerceAtLeast(16L)
@@ -316,7 +467,7 @@ class WorkspaceViewModel(private val projectId: String) : ViewModel() {
      * '>' button: steps forward by 1 frame at the project's selected FPS.
      */
     fun stepForward() {
-        playbackJob?.cancel()
+        cancelPlaybackLoopOnly()
         _uiState.update { state ->
             val fps = (state.project?.frameRate ?: 30).coerceIn(24, 60)
             val frameStepMs = (1000.0 / fps.toDouble()).toLong().coerceAtLeast(16L)
@@ -331,7 +482,7 @@ class WorkspaceViewModel(private val projectId: String) : ViewModel() {
     }
 
     fun selectScene(index: Int) {
-        playbackJob?.cancel()
+        cancelPlaybackLoopOnly()
         _uiState.update { state ->
             val win = state.sceneWindows.getOrNull(index)
             state.copy(
@@ -522,10 +673,10 @@ class WorkspaceViewModel(private val projectId: String) : ViewModel() {
             _uiState.update { it.copy(isEditPopoverVisible = false, snackbarMessage = "لا توجد خطوة للتراجع عنها") }
             return
         }
-        val currentScenes = _uiState.value.project?.scenes ?: emptyList()
-        redoStack.addLast(currentScenes)
+        val proj = _uiState.value.project
+        redoStack.addLast(WorkspaceHistorySnapshot(proj?.scenes.orEmpty(), proj?.aeLayers.orEmpty()))
         val previous = undoStack.removeLast()
-        VideoStarRepository.restoreScenes(projectId, previous)
+        VideoStarRepository.restoreProjectSnapshot(projectId, previous.scenes, previous.aeLayers)
         _uiState.update {
             it.copy(
                 isEditPopoverVisible = false,
@@ -541,10 +692,10 @@ class WorkspaceViewModel(private val projectId: String) : ViewModel() {
             _uiState.update { it.copy(isEditPopoverVisible = false, snackbarMessage = "لا توجد خطوة لإعادتها") }
             return
         }
-        val currentScenes = _uiState.value.project?.scenes ?: emptyList()
-        undoStack.addLast(currentScenes)
+        val proj = _uiState.value.project
+        undoStack.addLast(WorkspaceHistorySnapshot(proj?.scenes.orEmpty(), proj?.aeLayers.orEmpty()))
         val restored = redoStack.removeLast()
-        VideoStarRepository.restoreScenes(projectId, restored)
+        VideoStarRepository.restoreProjectSnapshot(projectId, restored.scenes, restored.aeLayers)
         _uiState.update {
             it.copy(
                 isEditPopoverVisible = false,
@@ -1008,8 +1159,464 @@ class WorkspaceViewModel(private val projectId: String) : ViewModel() {
         _uiState.update { it.copy(showSceneStrip = !it.showSceneStrip) }
     }
 
+    // --- Multi-Layout Switcher & Strict Effect Mode State Machine ---
+
+    fun openLayoutModal() {
+        if (_uiState.value.isInEditingOrEffectMode) return
+        _uiState.update {
+            it.copy(
+                isLayoutModalVisible = true,
+                isEditPopoverVisible = false,
+                isNewPopoverVisible = false,
+                isInfoPopoverVisible = false,
+                isAddPopoverVisible = false
+            )
+        }
+    }
+
+    fun dismissLayoutModal() {
+        _uiState.update { it.copy(isLayoutModalVisible = false) }
+    }
+
+    fun selectStudioLayout(layout: StudioLayoutMode) {
+        cancelPlaybackLoopOnly()
+        scrubController.reset()
+        StudioRenderMemoryCoordinator.trimTemporaryBuffers(aggressive = false)
+        VideoStarRepository.updateStudioLayout(projectId, layout)
+        if (layout == StudioLayoutMode.AFTER_EFFECTS) {
+            VideoStarRepository.ensureAeLayersHydrated(projectId)
+        }
+        _uiState.update {
+            it.copy(
+                isPlaying = false,
+                isScrubbing = false,
+                isLayoutModalVisible = false,
+                isEditPopoverVisible = false,
+                isNewPopoverVisible = false,
+                isInfoPopoverVisible = false,
+                isAddPopoverVisible = false,
+                activeEffectFilterCategory = "All"
+            )
+        }
+    }
+
+    fun enterEffectMode() {
+        _uiState.update {
+            it.copy(
+                isInlineEffectMode = true,
+                isLayoutModalVisible = false,
+                isEditPopoverVisible = false,
+                isNewPopoverVisible = false,
+                isInfoPopoverVisible = false,
+                isAddPopoverVisible = false
+            )
+        }
+    }
+
+    fun exitEffectMode() {
+        _uiState.update { it.copy(isInlineEffectMode = false) }
+    }
+
+    fun setInlineEffectCategory(category: String) {
+        _uiState.update { it.copy(activeEffectFilterCategory = category) }
+    }
+
+    fun selectNodeGraphStage(stage: String) {
+        _uiState.update { it.copy(selectedNodeGraphStage = stage) }
+    }
+
+    fun toggleQuickShaderEffect(effectId: String) {
+        val state = _uiState.value
+        val scenes = state.project?.scenes ?: emptyList()
+        if (scenes.isEmpty()) {
+            _uiState.update {
+                it.copy(snackbarMessage = "أضف فيديو أو صورة أولاً لتطبيق التأثير على المشهد")
+            }
+            return
+        }
+        val activeIdx = state.activeSceneIndex.coerceIn(0, scenes.lastIndex)
+        val scene = scenes[activeIdx]
+        val catalogItem = EffectCatalog.findById(effectId) ?: return
+        val existingPasses = scene.resolvedEffectPasses()
+        val xmlPreset = com.example.engine.packs.CustomPackRepository.findXmlPreset(effectId)
+        val expandedPasses = com.example.engine.packs.CustomPackRepository.expandEffectPassesForSelection(effectId)
+        if (expandedPasses.isEmpty()) return
+
+        val alreadyApplied = if (xmlPreset != null) {
+            val presetTargetIds = expandedPasses.map { it.effectId }.toSet()
+            presetTargetIds.isNotEmpty() && presetTargetIds.all { tid -> existingPasses.any { it.effectId == tid } }
+        } else {
+            existingPasses.any { it.effectId == catalogItem.id }
+        }
+
+        pushUndoSnapshot()
+        val updatedPasses = if (alreadyApplied) {
+            val removeIds = if (xmlPreset != null) expandedPasses.map { it.effectId }.toSet() else setOf(catalogItem.id)
+            existingPasses.filterNot { it.effectId in removeIds }
+        } else {
+            existingPasses + expandedPasses
+        }
+        VideoStarRepository.applySceneEffectPasses(projectId, setOf(activeIdx), updatedPasses)
+        _uiState.update {
+            it.copy(
+                snackbarMessage = if (alreadyApplied) {
+                    "تمت إزالة ${catalogItem.name}"
+                } else if (expandedPasses.size > 1) {
+                    "تم تطبيق ${catalogItem.name} (${expandedPasses.size} مؤثرات)"
+                } else {
+                    "تم تطبيق ${catalogItem.name}"
+                }
+            )
+        }
+    }
+
+    // --- After Effects Mode Multi-Layer Stack & Live Effect Editing ---
+
+    fun selectAeLayer(layerId: String?) {
+        _uiState.update { state ->
+            val proj = state.project
+            val targetLayer = layerId?.let { id -> proj?.aeLayers?.firstOrNull { it.id == id } }
+            val mappedSceneIdx = proj?.resolveSceneIndexForAeLayer(targetLayer)
+            state.copy(
+                selectedAeLayerId = layerId,
+                activeSceneIndex = mappedSceneIdx ?: state.activeSceneIndex
+            )
+        }
+    }
+
+    private fun ensureAePlaybackRunning() {
+        val current = _uiState.value
+        if (current.studioLayout != StudioLayoutMode.AFTER_EFFECTS) return
+        if (current.isPlaying) return
+        val sessionToken = cancelPlaybackLoopOnly()
+        scrubController.endScrub()
+        val atEnd = current.currentPositionMs >= (current.totalDurationMs - 40L).coerceAtLeast(100L)
+        _uiState.update {
+            it.copy(
+                currentPositionMs = if (atEnd) 0L else it.currentPositionMs,
+                activeSceneIndex = if (atEnd) 0 else it.activeSceneIndex,
+                isPlaying = true,
+                isScrubbing = false
+            )
+        }
+        val updated = _uiState.value
+        val isAeMultiLayer = updated.aeLayers.isNotEmpty()
+        val activeWin = updated.activeWindow
+        val isLiveForwardVideo = !isAeMultiLayer &&
+            activeWin != null &&
+            activeWin.scene.isVideo &&
+            !activeWin.scene.isReversed &&
+            !activeWin.scene.timing.freezeFrameEnabled &&
+            !activeWin.scene.isMultiLayerComposite &&
+            activeWin.scene.clip is MediaClip.Video
+        if (!isLiveForwardVideo) {
+            startSoftwareTimelineLoop(sessionToken)
+        }
+    }
+
+    fun addAeMediaLayer(clip: MediaClip) {
+        pushUndoSnapshot()
+        val atMs = _uiState.value.currentPositionMs
+        val created = VideoStarRepository.addAeStackedLayer(
+            projectId = projectId,
+            kind = AeLayerKind.MEDIA,
+            clip = clip,
+            startTimeMs = atMs,
+            durationMs = clip.effectiveDurationMs
+        )
+        if (created != null) {
+            _uiState.update {
+                it.copy(
+                    selectedAeLayerId = created.id,
+                    snackbarMessage = "Stacked layer: ${created.displayTitle}"
+                )
+            }
+            ensureAePlaybackRunning()
+        }
+    }
+
+    fun addAeLayerByKind(kind: AeLayerKind, customTitle: String = "") {
+        pushUndoSnapshot()
+        val atMs = _uiState.value.currentPositionMs
+        val created = VideoStarRepository.addAeStackedLayer(
+            projectId = projectId,
+            kind = kind,
+            clip = null,
+            title = customTitle,
+            startTimeMs = atMs,
+            durationMs = 3_000L
+        )
+        if (created != null) {
+            _uiState.update {
+                it.copy(
+                    selectedAeLayerId = created.id,
+                    snackbarMessage = "Added ${created.displayTitle} layer"
+                )
+            }
+        }
+    }
+
+    fun toggleAeLayerVisibility(layerId: String) {
+        pushUndoSnapshot()
+        VideoStarRepository.toggleAeLayerVisibility(projectId, layerId)
+    }
+
+    fun toggleAeLayerLock(layerId: String) {
+        pushUndoSnapshot()
+        VideoStarRepository.toggleAeLayerLock(projectId, layerId)
+    }
+
+    fun renameAeLayer(layerId: String, newTitle: String) {
+        pushUndoSnapshot()
+        VideoStarRepository.renameAeLayer(projectId, layerId, newTitle)
+    }
+
+    fun duplicateSelectedAeLayer() {
+        val targetId = _uiState.value.selectedAeLayerId ?: return
+        pushUndoSnapshot()
+        val cloned = VideoStarRepository.duplicateAeLayer(projectId, targetId)
+        if (cloned != null) {
+            _uiState.update {
+                it.copy(
+                    selectedAeLayerId = cloned.id,
+                    snackbarMessage = "Duplicated ${cloned.displayTitle}"
+                )
+            }
+        }
+    }
+
+    fun deleteSelectedAeLayer() {
+        val targetId = _uiState.value.selectedAeLayerId ?: return
+        pushUndoSnapshot()
+        VideoStarRepository.deleteAeLayer(projectId, targetId)
+        _uiState.update {
+            it.copy(
+                selectedAeLayerId = null,
+                snackbarMessage = "Layer deleted"
+            )
+        }
+    }
+
+    fun beginAeLayerReorder() {
+        pushUndoSnapshot()
+    }
+
+    fun reorderAeLayer(fromIndex: Int, toIndex: Int) {
+        VideoStarRepository.reorderAeLayer(projectId, fromIndex, toIndex)
+    }
+
+    fun moveAeLayerTiming(layerId: String, newStartMs: Long) {
+        VideoStarRepository.moveAeLayerTiming(projectId, layerId, newStartMs)
+    }
+
+    fun commitAeLayerTimingDrag(layerId: String, initialStartMs: Long, finalStartMs: Long) {
+        val proj = _uiState.value.project ?: return
+        val targetLayer = proj.aeLayers.firstOrNull { it.id == layerId } ?: return
+        if (targetLayer.isLocked) return
+        val clampedInitial = initialStartMs.coerceAtLeast(0L)
+        val clampedFinal = finalStartMs.coerceAtLeast(0L)
+        if (clampedInitial == clampedFinal && targetLayer.startTimeMs == clampedFinal) return
+
+        val preDragLayers = proj.aeLayers.map { layer ->
+            if (layer.id == layerId) layer.copy(startTimeMs = clampedInitial) else layer
+        }
+        undoStack.addLast(WorkspaceHistorySnapshot(proj.scenes, preDragLayers))
+        while (undoStack.size > 30) undoStack.removeFirst()
+        redoStack.clear()
+        _uiState.update { it.copy(canUndo = undoStack.isNotEmpty(), canRedo = false) }
+        VideoStarRepository.moveAeLayerTiming(projectId, layerId, clampedFinal)
+    }
+
+    fun addAeLayerEffect(layerId: String, effectId: String): ShaderEffectPass? {
+        if (_uiState.value.aeLayers.isEmpty()) {
+            VideoStarRepository.ensureAeLayersHydrated(projectId)
+        }
+        val availableLayers = VideoStarRepository.getProjectById(projectId)?.aeLayers
+            ?: _uiState.value.aeLayers
+        val resolvedLayer = availableLayers.firstOrNull { it.id == layerId }
+            ?: run {
+                val sceneMatch = if (layerId.startsWith("ae_sync_")) {
+                    availableLayers.firstOrNull { l ->
+                        l.sourceSceneId != null && layerId.contains(l.sourceSceneId)
+                    }
+                } else null
+                sceneMatch
+                    ?: _uiState.value.selectedAeLayerId?.let { sel -> availableLayers.firstOrNull { it.id == sel } }
+                    ?: availableLayers.firstOrNull()
+            }
+            ?: return null
+
+        val passesToAdd = com.example.engine.ae.AeEffectEngine.createPassesForSelection(effectId)
+        if (passesToAdd.isEmpty()) return null
+        val presetName = com.example.engine.packs.CustomPackRepository.findXmlPreset(effectId)?.name
+        pushUndoSnapshot()
+        VideoStarRepository.updateAeLayer(projectId, resolvedLayer.id) { cur ->
+            cur.copy(effectPasses = cur.effectPasses + passesToAdd)
+        }
+        val toastName = presetName ?: passesToAdd.first().effectName
+        val suffix = if (passesToAdd.size > 1) " (${passesToAdd.size} passes)" else ""
+        _uiState.update {
+            it.copy(
+                selectedAeLayerId = resolvedLayer.id,
+                snackbarMessage = "Applied $toastName$suffix"
+            )
+        }
+        ensureAePlaybackRunning()
+        return passesToAdd.lastOrNull()
+    }
+
+    fun updateAeLayerEffectPass(layerId: String, updatedPass: ShaderEffectPass, recordUndo: Boolean = false) {
+        if (recordUndo) pushUndoSnapshot()
+        VideoStarRepository.updateAeLayer(projectId, layerId) { cur ->
+            cur.copy(
+                effectPasses = cur.effectPasses.map { pass ->
+                    if (pass.id == updatedPass.id) updatedPass else pass
+                }
+            )
+        }
+    }
+
+    fun removeAeLayerEffectPass(layerId: String, passId: String) {
+        pushUndoSnapshot()
+        VideoStarRepository.updateAeLayer(projectId, layerId) { cur ->
+            cur.copy(effectPasses = cur.effectPasses.filterNot { it.id == passId || it.effectId == passId })
+        }
+    }
+
+    fun updateAeLayerProperties(layerId: String, updatedLayer: EditorLayer, recordUndo: Boolean = false) {
+        if (recordUndo) pushUndoSnapshot()
+        VideoStarRepository.updateAeLayer(projectId, layerId) { cur ->
+            if (cur.isLocked) cur else updatedLayer.copy(id = cur.id, number = cur.number)
+        }
+    }
+
+    fun toggleAeLayerTransformKeyframe(layerId: String) {
+        val layer = _uiState.value.aeLayers.firstOrNull { it.id == layerId } ?: return
+        if (layer.isLocked) return
+        val layerDur = layer.effectiveLayerDurationMs.toFloat().coerceAtLeast(1f)
+        val progress = ((_uiState.value.currentPositionMs - layer.startTimeMs).toFloat() / layerDur).coerceIn(0f, 1f)
+        pushUndoSnapshot()
+
+        val nearby = layer.keyframes.firstOrNull { abs(it.timeProgress - progress) <= 0.03f }
+        val nextKeyframes = if (nearby != null) {
+            layer.keyframes.filterNot { it.id == nearby.id }
+        } else {
+            val evaluated = com.example.engine.ae.AeEffectEngine.composeAeLayerTransformAt(
+                layer = layer,
+                timelinePositionMs = _uiState.value.currentPositionMs
+            )
+            (layer.keyframes + LayerKeyframe(
+                id = "lkf_${UUID.randomUUID().toString().take(6)}",
+                timeProgress = progress,
+                offsetX = evaluated.offsetX,
+                offsetY = evaluated.offsetY,
+                scale = evaluated.scale,
+                rotation = evaluated.rotation,
+                opacity = evaluated.opacity
+            )).sortedBy { it.timeProgress }
+        }
+        VideoStarRepository.updateAeLayer(projectId, layerId) { cur ->
+            cur.copy(keyframes = nextKeyframes)
+        }
+    }
+
+    fun trimAeLayerStartToPlayhead(layerId: String) {
+        val layer = _uiState.value.aeLayers.firstOrNull { it.id == layerId } ?: return
+        if (layer.isLocked) return
+        val playhead = _uiState.value.currentPositionMs
+        val layerEnd = layer.startTimeMs + layer.effectiveLayerDurationMs
+        val newStart = playhead.coerceIn(0L, (layerEnd - 300L).coerceAtLeast(0L))
+        val newDur = (layerEnd - newStart).coerceAtLeast(300L)
+        val trimmedDelta = newStart - layer.startTimeMs
+        pushUndoSnapshot()
+        VideoStarRepository.updateAeLayer(projectId, layerId) { cur ->
+            val updatedClip = when (val c = cur.mediaClip) {
+                is MediaClip.Video -> c.copy(
+                    startTrimMs = (c.startTrimMs + trimmedDelta).coerceIn(0L, (c.endTrimMs - 300L).coerceAtLeast(0L))
+                )
+                is MediaClip.Photo -> c.copy(durationMs = newDur)
+                null -> null
+            }
+            cur.copy(startTimeMs = newStart, durationMs = newDur, mediaClip = updatedClip)
+        }
+    }
+
+    fun trimAeLayerEndToPlayhead(layerId: String) {
+        val layer = _uiState.value.aeLayers.firstOrNull { it.id == layerId } ?: return
+        if (layer.isLocked) return
+        val playhead = _uiState.value.currentPositionMs
+        val newEnd = playhead.coerceAtLeast(layer.startTimeMs + 300L)
+        val newDur = (newEnd - layer.startTimeMs).coerceAtLeast(300L)
+        pushUndoSnapshot()
+        VideoStarRepository.updateAeLayer(projectId, layerId) { cur ->
+            val updatedClip = when (val c = cur.mediaClip) {
+                is MediaClip.Video -> c.copy(
+                    endTrimMs = (c.startTrimMs + newDur).coerceIn(c.startTrimMs + 300L, c.durationMs)
+                )
+                is MediaClip.Photo -> c.copy(durationMs = newDur)
+                null -> null
+            }
+            cur.copy(durationMs = newDur, mediaClip = updatedClip)
+        }
+    }
+
+    fun splitAeLayerAtPlayhead(layerId: String): String? {
+        val layer = _uiState.value.aeLayers.firstOrNull { it.id == layerId } ?: return null
+        if (layer.isLocked) return null
+        val atMs = _uiState.value.currentPositionMs
+        pushUndoSnapshot()
+        val created = VideoStarRepository.splitAeLayerAt(projectId, layerId, atMs) ?: return null
+        _uiState.update {
+            it.copy(
+                selectedAeLayerId = created.id,
+                snackbarMessage = "Split ${layer.displayTitle} into 2 layers"
+            )
+        }
+        return created.id
+    }
+
+    fun toggleAeLayerEffectKeyframe(
+        layerId: String,
+        passId: String,
+        propertyKey: String,
+        currentValue: Float
+    ) {
+        val layer = _uiState.value.aeLayers.firstOrNull { it.id == layerId } ?: return
+        val pass = layer.effectPasses.firstOrNull { it.id == passId } ?: return
+        val layerDur = layer.effectiveLayerDurationMs.toFloat().coerceAtLeast(1f)
+        val progress = ((_uiState.value.currentPositionMs - layer.startTimeMs).toFloat() / layerDur).coerceIn(0f, 1f)
+        pushUndoSnapshot()
+
+        val existingList = pass.keyframesForProperty(propertyKey)
+        val nearby = existingList.firstOrNull { abs(it.time - progress) <= 0.03f }
+        val nextList = if (nearby != null) {
+            existingList.filterNot { it.id == nearby.id }
+        } else {
+            (existingList + ParameterKeyframe(
+                id = "pkf_${UUID.randomUUID().toString().take(6)}",
+                time = progress,
+                value = currentValue
+            )).sortedBy { it.time }
+        }
+        val nextMap = if (nextList.isEmpty()) {
+            pass.paramKeyframes - propertyKey
+        } else {
+            pass.paramKeyframes + (propertyKey to nextList)
+        }
+        val legacyKfs = if (propertyKey == PARAM_KEY_INTENSITY) {
+            nextList.map { EffectKeyframe(id = it.id, timeProgress = it.time, intensity = it.value, easing = it.easing) }
+        } else pass.keyframes
+
+        val updated = pass.copy(keyframes = legacyKfs, paramKeyframes = nextMap)
+        VideoStarRepository.updateAeLayer(projectId, layerId) { cur ->
+            cur.copy(effectPasses = cur.effectPasses.map { if (it.id == passId) updated else it })
+        }
+    }
+
     fun saveBeforeClose() {
-        playbackJob?.cancel()
+        cancelPlaybackLoopOnly()
+        scrubController.reset()
+        StudioRenderMemoryCoordinator.trimTemporaryBuffers(aggressive = true)
         VideoStarRepository.saveNow()
     }
 
@@ -1026,7 +1633,9 @@ class WorkspaceViewModel(private val projectId: String) : ViewModel() {
     }
 
     override fun onCleared() {
-        playbackJob?.cancel()
+        cancelPlaybackLoopOnly()
+        scrubController.reset()
+        StudioRenderMemoryCoordinator.trimTemporaryBuffers(aggressive = true)
         VideoStarRepository.saveNow()
         super.onCleared()
     }

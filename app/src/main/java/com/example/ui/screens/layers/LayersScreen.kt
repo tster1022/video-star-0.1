@@ -9,6 +9,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -69,13 +70,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import com.example.ui.components.PrecisionRulerDialSlider
+import com.example.ui.components.rememberStudioTickHaptics
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -88,9 +89,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -124,6 +127,7 @@ import com.example.model.LayerMediaType
 import com.example.model.MaskMode
 import com.example.model.MaskShape
 import com.example.model.MediaClip
+import com.example.model.SamTapPoint
 import com.example.model.TextLayerSpec
 import com.example.ui.components.IosThinSlider
 import com.example.ui.components.MediaClipStageContent
@@ -152,15 +156,16 @@ fun LayersScreen(
     onOpenAdjustVideoForLayer: (projectId: String, mediaUri: String, durationMs: Long, sourceFps: Int, targetLayerIndex: Int) -> Unit,
     onOpenAdjustPhotoForLayer: (projectId: String, mediaUri: String, targetLayerIndex: Int) -> Unit,
     onSwitchToDarkTheme: () -> Unit,
-    onOpenLayerEffectsStudio: (String, String) -> Unit = { _, _ -> }
+    onOpenLayerEffectsStudio: (String, String) -> Unit = { _, _ -> },
+    targetSceneIndex: Int? = null
 ) {
     val viewModel: LayersViewModel = viewModel(
-        key = "classic_layers_$projectId",
-        factory = remember(projectId) {
+        key = "classic_layers_${projectId}_${targetSceneIndex ?: -1}",
+        factory = remember(projectId, targetSceneIndex) {
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                    return LayersViewModel(projectId) as T
+                    return LayersViewModel(projectId, targetSceneIndex) as T
                 }
             }
         }
@@ -329,10 +334,13 @@ fun LayersScreen(
                         isPlaying = uiState.isPlaying,
                         isMuted = uiState.isMuted,
                         hasTouchedStage = uiState.hasTouchedStage,
+                        isSamTapMode = uiState.isSamTapMode,
+                        samTapPoints = uiState.activeLayer?.samCutout?.tapPoints.orEmpty(),
                         interpolateLayer = viewModel::interpolatedLayerAt,
                         onStageTouched = viewModel::markStageTouched,
                         onTransformGesture = viewModel::onLayerTransformGesture,
                         onDoubleTapReset = viewModel::resetActiveLayerTransform,
+                        onSamStageTap = { nx, ny -> viewModel.addSamTapPoint(context, nx, ny) },
                         onRequestImportLayerMedia = { targetIdx ->
                             launchMediaPickerForSlot(
                                 targetIdx,
@@ -378,6 +386,9 @@ fun LayersScreen(
                         tab = tab,
                         activeLayer = activeLayer,
                         containerHeight = bodyHeight,
+                        isSamProcessing = uiState.isSamProcessing,
+                        isSamTapMode = uiState.isSamTapMode,
+                        samTapInclude = uiState.samTapInclude,
                         onSelectEffect = viewModel::setLayerEffect,
                         onOpenEffectsStudio = {
                             viewModel.syncToRepository()
@@ -387,6 +398,13 @@ fun LayersScreen(
                         onOpacityChange = viewModel::setLayerOpacity,
                         onTextSpecUpdated = viewModel::setLayerTextSpec,
                         onMaskUpdated = viewModel::setLayerMask,
+                        onRunSamAutoCutout = { viewModel.runSamAutoCutout(context) },
+                        onToggleSamTapMode = viewModel::toggleSamTapMode,
+                        onSetSamTapInclude = viewModel::setSamTapInclude,
+                        onUpdateSamRefinement = { feather, choke, invert ->
+                            viewModel.updateSamRefinement(context, feather, choke, invert)
+                        },
+                        onClearSamCutout = viewModel::clearSamCutout,
                         onToggleMirror = viewModel::toggleHorizontalMirror,
                         onToggleFlipVertical = viewModel::toggleVerticalFlip,
                         onClose = viewModel::dismissBottomPanel
@@ -608,10 +626,13 @@ private fun ClassicStagePreviewArea(
     isPlaying: Boolean,
     isMuted: Boolean,
     hasTouchedStage: Boolean,
+    isSamTapMode: Boolean = false,
+    samTapPoints: List<SamTapPoint> = emptyList(),
     interpolateLayer: (EditorLayer, Float) -> EditorLayer,
     onStageTouched: () -> Unit,
     onTransformGesture: (Float, Float, Float, Float) -> Unit,
     onDoubleTapReset: () -> Unit,
+    onSamStageTap: (Float, Float) -> Unit = { _, _ -> },
     onRequestImportLayerMedia: (Int) -> Unit,
     onTogglePlay: () -> Unit,
     onScrub: (Float) -> Unit,
@@ -666,11 +687,12 @@ private fun ClassicStagePreviewArea(
                 val clip = layer.mediaClip
                 val layerColor = layer.backgroundColorArgb?.let { Color(it.toInt()) }
                 val activeLayerPasses = layer.effectPasses.filter { it.isEnabled && it.effectId != "none" }
-                val useLayerGl = activeLayerPasses.isNotEmpty() &&
+                val useLayerGl = (activeLayerPasses.isNotEmpty() || layer.samCutout.isActive) &&
                     isHardwareGlSupported &&
                     (clip != null || layerColor != null)
 
                 if (clip != null || layerColor != null || layer.effectiveText.isNotBlank()) {
+                    val parentLayer = layer.parentLayerId?.let { pid -> layers.firstOrNull { it.id == pid } }
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -703,6 +725,7 @@ private fun ClassicStagePreviewArea(
                                 progress = stageProgress,
                                 isPlaying = isPlaying,
                                 isMuted = isMuted,
+                                parentLayer = parentLayer,
                                 modifier = Modifier.fillMaxSize()
                             )
                         } else {
@@ -804,9 +827,53 @@ private fun ClassicStagePreviewArea(
                 }
             }
 
+            if (isSamTapMode) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(isSamTapMode) {
+                            detectTapGestures { offset ->
+                                if (size.width > 0 && size.height > 0) {
+                                    onSamStageTap(
+                                        (offset.x / size.width.toFloat()).coerceIn(0f, 1f),
+                                        (offset.y / size.height.toFloat()).coerceIn(0f, 1f)
+                                    )
+                                }
+                            }
+                        }
+                        .testTag("classic_sam_tap_overlay")
+                ) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        samTapPoints.forEach { pt ->
+                            val center = Offset(pt.x * size.width, pt.y * size.height)
+                            val color = if (pt.include) ClassicGreen else ClassicRed
+                            drawCircle(color = Color.White, radius = 9.dp.toPx(), center = center)
+                            drawCircle(color = color, radius = 6.5.dp.toPx(), center = center)
+                            drawCircle(color = Color.Black.copy(alpha = 0.45f), radius = 9.dp.toPx(), center = center, style = Stroke(width = 1.5.dp.toPx()))
+                        }
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color.Black.copy(alpha = 0.72f),
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 8.dp)
+                    ) {
+                        Text(
+                            text = "وضع تحديد SAM — انقر على العنصر لعزله",
+                            fontFamily = CairoFontFamily,
+                            color = VideoStarWhite,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            }
+
             // Small semi-transparent Arabic gesture hint inside preview, disappears on first touch
             StageGestureHintBadge(
-                visible = !hasTouchedStage,
+                visible = !hasTouchedStage && !isSamTapMode,
                 text = stringResource(R.string.ml_hint_drag),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -883,12 +950,20 @@ private fun ClassicLayersToolPanel(
     tab: ClassicLayerTab,
     activeLayer: EditorLayer,
     containerHeight: androidx.compose.ui.unit.Dp,
+    isSamProcessing: Boolean,
+    isSamTapMode: Boolean,
+    samTapInclude: Boolean,
     onSelectEffect: (LayerEffectType) -> Unit,
     onOpenEffectsStudio: () -> Unit,
     onSelectTint: (Color) -> Unit,
     onOpacityChange: (Float) -> Unit,
     onTextSpecUpdated: (TextLayerSpec) -> Unit,
     onMaskUpdated: (MaskMode, MaskShape, Float, Boolean, Float) -> Unit,
+    onRunSamAutoCutout: () -> Unit,
+    onToggleSamTapMode: () -> Unit,
+    onSetSamTapInclude: (Boolean) -> Unit,
+    onUpdateSamRefinement: (Float, Float, Boolean) -> Unit,
+    onClearSamCutout: () -> Unit,
     onToggleMirror: () -> Unit,
     onToggleFlipVertical: () -> Unit,
     onClose: () -> Unit
@@ -907,7 +982,7 @@ private fun ClassicLayersToolPanel(
                     modifier = Modifier.fillMaxWidth().testTag("layers_open_gpu_effects_studio")
                 ) {
                     Text(
-                        text = "فتح استوديو مؤثرات GPU (35 فلتر)",
+                        text = "فتح استوديو مؤثرات GPU (145 فلتر)",
                         fontFamily = CairoFontFamily,
                         fontWeight = FontWeight.Bold
                     )
@@ -932,41 +1007,49 @@ private fun ClassicLayersToolPanel(
                 }
             }
             ClassicLayerTab.COLOR -> {
-                Row(
+                val haptics = rememberStudioTickHaptics()
+                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    listOf(
-                        Color.Transparent,
-                        ClassicRed,
-                        ClassicGreen,
-                        Color(0xFF00BCD4),
-                        Color(0xFFFFB74D)
-                    ).forEach { color ->
-                        val selected = activeLayer.tintColor == color
-                        Box(
-                            modifier = Modifier
-                                .size(28.dp)
-                                .clip(CircleShape)
-                                .background(if (color == Color.Transparent) Color(0xFFE0E0E5) else color)
-                                .border(
-                                    width = if (selected) 2.5.dp else 1.dp,
-                                    color = if (selected) VideoStarInkDark else VideoStarIosDivider,
-                                    shape = CircleShape
-                                )
-                                .clickable { onSelectTint(color) }
-                        )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        listOf(
+                            Color.Transparent,
+                            ClassicRed,
+                            ClassicGreen,
+                            Color(0xFF00BCD4),
+                            Color(0xFFFFB74D)
+                        ).forEach { color ->
+                            val selected = activeLayer.tintColor == color
+                            Box(
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .clip(CircleShape)
+                                    .background(if (color == Color.Transparent) Color(0xFFE0E0E5) else color)
+                                    .border(
+                                        width = if (selected) 2.5.dp else 1.dp,
+                                        color = if (selected) VideoStarInkDark else VideoStarIosDivider,
+                                        shape = CircleShape
+                                    )
+                                    .clickable {
+                                        haptics.pulseSelection()
+                                        onSelectTint(color)
+                                    }
+                            )
+                        }
                     }
-                    Slider(
+                    PrecisionRulerDialSlider(
+                        label = "الشفافية",
+                        valueText = "${(activeLayer.opacity * 100f).toInt()}%",
                         value = activeLayer.opacity,
                         onValueChange = onOpacityChange,
                         valueRange = 0.2f..1f,
-                        colors = SliderDefaults.colors(
-                            thumbColor = ClassicGreen,
-                            activeTrackColor = ClassicGreen
-                        ),
-                        modifier = Modifier.weight(1f)
+                        defaultValue = 1f,
+                        height = 40.dp
                     )
                 }
             }
@@ -1008,7 +1091,15 @@ private fun ClassicLayersToolPanel(
                     activeLayer = activeLayer,
                     isDarkTheme = false,
                     onMaskUpdated = onMaskUpdated,
-                    onClose = onClose
+                    onClose = onClose,
+                    isSamProcessing = isSamProcessing,
+                    isSamTapMode = isSamTapMode,
+                    samTapInclude = samTapInclude,
+                    onRunSamAutoCutout = onRunSamAutoCutout,
+                    onToggleSamTapMode = onToggleSamTapMode,
+                    onSetSamTapInclude = onSetSamTapInclude,
+                    onUpdateSamRefinement = onUpdateSamRefinement,
+                    onClearSamCutout = onClearSamCutout
                 )
             }
             ClassicLayerTab.LAYOUT -> Unit

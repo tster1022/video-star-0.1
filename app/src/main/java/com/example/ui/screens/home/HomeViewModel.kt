@@ -6,6 +6,7 @@ import com.example.data.VideoStarRepository
 import com.example.model.AspectRatioMode
 import com.example.model.CompressionQuality
 import com.example.model.ShareTarget
+import com.example.model.StudioLayoutMode
 import com.example.model.VideoProject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -45,13 +46,18 @@ data class HomeUiState(
     val fpsOption: Int = 60,
     val watermarkEnabled: Boolean = false,
     val searchQuery: String = "",
-    val snackbarMessage: String? = null
+    val snackbarMessage: String? = null,
+    val preferredLayout: StudioLayoutMode = StudioLayoutMode.NOVA,
+    val isLayoutModalVisible: Boolean = false
 ) {
     val visibleProjects: List<VideoProject>
         get() = if (showFavoritesOnly) allProjects.filter { it.isFavorite } else allProjects
 
     val currentProject: VideoProject?
         get() = visibleProjects.getOrNull(activeProjectIndex.coerceIn(0, (visibleProjects.size - 1).coerceAtLeast(0)))
+
+    val activeLayout: StudioLayoutMode
+        get() = currentProject?.studioLayout ?: preferredLayout
 }
 
 class HomeViewModel : ViewModel() {
@@ -70,6 +76,31 @@ class HomeViewModel : ViewModel() {
                 }
             }
             .launchIn(viewModelScope)
+
+        VideoStarRepository.preferredLayout
+            .onEach { layout ->
+                _uiState.update { it.copy(preferredLayout = layout) }
+            }
+            .launchIn(viewModelScope)
+    }
+
+    fun openLayoutModal() {
+        _uiState.update { it.copy(isLayoutModalVisible = true, isSharePopoverVisible = false) }
+    }
+
+    fun dismissLayoutModal() {
+        _uiState.update { it.copy(isLayoutModalVisible = false) }
+    }
+
+    fun selectHomeLayout(layout: StudioLayoutMode) {
+        val currentId = _uiState.value.currentProject?.id
+        VideoStarRepository.updatePreferredLayout(layout, projectId = currentId)
+        _uiState.update {
+            it.copy(
+                preferredLayout = layout,
+                isLayoutModalVisible = false
+            )
+        }
     }
 
     fun onActiveProjectChanged(index: Int) {

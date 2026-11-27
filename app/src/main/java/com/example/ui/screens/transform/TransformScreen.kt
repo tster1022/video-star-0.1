@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -62,6 +63,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.ui.components.PrecisionGoldAccent
+import com.example.ui.components.PrecisionRulerDialSlider
+import com.example.ui.components.rememberStudioTickHaptics
 import com.example.ui.components.ColorWheelIcon
 import com.example.ui.components.IosHairlineDivider
 import com.example.ui.components.IosSegmentedControl
@@ -108,6 +112,7 @@ fun TransformScreen(
 
     Scaffold(
         containerColor = Color.Transparent,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TransformTopBar(
                 onCancelClick = onCancel,
@@ -481,6 +486,7 @@ fun TransformScreen(
 
                                 Spacer(modifier = Modifier.weight(1f))
 
+                                val haptics = rememberStudioTickHaptics()
                                 listOf("Smooth", "Ease In", "Ease Out", "Bounce").forEach { ease ->
                                     val selected = uiState.easing == ease
                                     Surface(
@@ -488,7 +494,10 @@ fun TransformScreen(
                                         color = if (selected) AdjustVideoTitleDark else Color(0xFFF2F2F7),
                                         modifier = Modifier
                                             .height(28.dp)
-                                            .iosPressable { viewModel.selectEasing(ease) }
+                                            .iosPressable {
+                                                haptics.pulseSelection()
+                                                viewModel.selectEasing(ease)
+                                            }
                                             .testTag("transform_easing_${ease.lowercase().replace(" ", "_")}")
                                     ) {
                                         Box(
@@ -512,8 +521,9 @@ fun TransformScreen(
 
                         IosHairlineDivider()
 
-                        // Row 2: Size Label + Circular Green Reset + Thin iOS Slider
-                        Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
+                        // Row 2: Precision Tick-Ruler Dial for Size + Circular Green Reset
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            val sizeHaptics = rememberStudioTickHaptics()
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -523,7 +533,7 @@ fun TransformScreen(
                                     text = "Size: ${(uiState.activeScale * 100f).roundToInt()}%",
                                     fontFamily = SfProDisplayFontFamily,
                                     color = AdjustVideoTitleDark,
-                                    fontSize = 13.sp,
+                                    fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     modifier = Modifier.testTag("transform_zoom_label")
                                 )
@@ -531,18 +541,22 @@ fun TransformScreen(
                                     tint = ClassicGreen,
                                     contentDescription = "Reset Size",
                                     testTag = "transform_zoom_reset_button",
-                                    onClick = viewModel::resetZoom
+                                    onClick = {
+                                        sizeHaptics.pulseSelection()
+                                        viewModel.resetZoom()
+                                    }
                                 )
                             }
-                            IosThinSlider(
+                            PrecisionRulerDialSlider(
+                                label = "Size (%)",
+                                valueText = "${(uiState.activeScale * 100f).roundToInt()}%",
                                 value = uiState.activeScale,
                                 onValueChange = viewModel::setZoom,
                                 valueRange = 0.25f..3.0f,
-                                activeTrackColor = ClassicGreen,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(34.dp)
-                                    .testTag("transform_zoom_slider")
+                                defaultValue = 1.0f,
+                                accentColor = PrecisionGoldAccent,
+                                height = 42.dp,
+                                sliderTestTag = "transform_zoom_slider"
                             )
                         }
 

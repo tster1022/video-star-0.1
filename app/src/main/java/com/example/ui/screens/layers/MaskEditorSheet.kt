@@ -11,12 +11,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import com.example.ui.components.PrecisionRulerDialSlider
+import com.example.ui.components.rememberStudioTickHaptics
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.sp
 import com.example.model.EditorLayer
 import com.example.model.MaskMode
 import com.example.model.MaskShape
+import com.example.model.SamCutoutSpec
 import com.example.ui.components.IosHairlineDivider
 import com.example.ui.components.iosPressable
 import com.example.ui.theme.CairoFontFamily
@@ -60,6 +61,14 @@ fun MaskEditorSheet(
         linearAngle: Float
     ) -> Unit,
     onClose: () -> Unit,
+    isSamProcessing: Boolean = false,
+    isSamTapMode: Boolean = false,
+    samTapInclude: Boolean = true,
+    onRunSamAutoCutout: (() -> Unit)? = null,
+    onToggleSamTapMode: (() -> Unit)? = null,
+    onSetSamTapInclude: ((Boolean) -> Unit)? = null,
+    onUpdateSamRefinement: ((feather: Float, choke: Float, invert: Boolean) -> Unit)? = null,
+    onClearSamCutout: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val bgColor = if (isDarkTheme) Color(0xFF222228) else VideoStarWhite
@@ -108,6 +117,27 @@ fun MaskEditorSheet(
                             .iosPressable(onClick = onClose)
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                             .testTag("mask_editor_done")
+                    )
+                }
+
+                if (onRunSamAutoCutout != null &&
+                    onToggleSamTapMode != null &&
+                    onSetSamTapInclude != null &&
+                    onUpdateSamRefinement != null &&
+                    onClearSamCutout != null
+                ) {
+                    SamCutoutControlsCard(
+                        samCutout = activeLayer?.samCutout ?: SamCutoutSpec(),
+                        isProcessing = isSamProcessing,
+                        isTapMode = isSamTapMode,
+                        tapInclude = samTapInclude,
+                        hasLayerMedia = activeLayer?.mediaClip != null || activeLayer?.backgroundColorArgb != null,
+                        isDarkTheme = isDarkTheme,
+                        onRunAutoCutout = onRunSamAutoCutout,
+                        onToggleTapMode = onToggleSamTapMode,
+                        onSetTapInclude = onSetSamTapInclude,
+                        onUpdateRefinement = onUpdateSamRefinement,
+                        onClearCutout = onClearSamCutout
                     )
                 }
 
@@ -181,53 +211,42 @@ fun MaskEditorSheet(
 
                 if (mode == MaskMode.LINEAR) {
                     IosHairlineDivider()
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = "الزاوية: ${angle.roundToInt()}°",
-                            fontFamily = CairoFontFamily,
-                            color = mutedText,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                        Slider(
-                            value = angle,
-                            onValueChange = { onMaskUpdated(MaskMode.LINEAR, shape, feather, invert, it) },
-                            valueRange = 0f..360f,
-                            colors = SliderDefaults.colors(thumbColor = ClassicRed, activeTrackColor = ClassicRed),
-                            modifier = Modifier.weight(1f).height(24.dp).testTag("mask_linear_angle_slider")
-                        )
-                    }
+                    PrecisionRulerDialSlider(
+                        label = "الزاوية",
+                        valueText = "${angle.roundToInt()}°",
+                        value = angle,
+                        onValueChange = { onMaskUpdated(MaskMode.LINEAR, shape, feather, invert, it) },
+                        valueRange = 0f..360f,
+                        height = 40.dp,
+                        sliderTestTag = "mask_linear_angle_slider"
+                    )
                 }
 
                 if (mode != MaskMode.NONE) {
+                    val haptics = rememberStudioTickHaptics()
                     IosHairlineDivider()
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text(
-                            text = "النعومة: ${(feather * 100f).roundToInt()}%",
-                            fontFamily = CairoFontFamily,
-                            color = mutedText,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                        Slider(
+                        PrecisionRulerDialSlider(
+                            label = "النعومة",
+                            valueText = "${(feather * 100f).roundToInt()}%",
                             value = feather,
                             onValueChange = { onMaskUpdated(mode, shape, it, invert, angle) },
                             valueRange = 0f..1f,
-                            colors = SliderDefaults.colors(thumbColor = ClassicGreen, activeTrackColor = ClassicGreen),
-                            modifier = Modifier.weight(1f).height(24.dp).testTag("mask_feather_slider")
+                            height = 40.dp,
+                            sliderTestTag = "mask_feather_slider",
+                            modifier = Modifier.weight(1f)
                         )
                         Text("عكس", fontFamily = CairoFontFamily, color = mutedText, fontSize = 11.sp)
                         Switch(
                             checked = invert,
-                            onCheckedChange = { onMaskUpdated(mode, shape, feather, it, angle) },
+                            onCheckedChange = {
+                                haptics.pulseSelection()
+                                onMaskUpdated(mode, shape, feather, it, angle)
+                            },
                             colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = ClassicRed),
                             modifier = Modifier.testTag("mask_invert_switch")
                         )

@@ -62,6 +62,8 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import com.example.ui.components.PrecisionRulerDialSlider
+import com.example.ui.components.rememberStudioTickHaptics
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -1150,18 +1152,14 @@ private fun KeyframeBottomPropertiesSection(
                         }
                     }
                 }
-                Slider(
+                PrecisionRulerDialSlider(
+                    label = "Effect (%)",
+                    valueText = "${(uiState.displayEffectIntensity * 100f).roundToInt()}%",
                     value = uiState.displayEffectIntensity,
                     onValueChange = onEffectIntensityChange,
-                    colors = SliderDefaults.colors(
-                        thumbColor = VideoStarWhite,
-                        activeTrackColor = ClassicRed,
-                        inactiveTrackColor = Color(0xFFDADAE0)
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(26.dp)
-                        .testTag("keyframe_effect_slider")
+                    valueRange = 0f..1f,
+                    height = 40.dp,
+                    sliderTestTag = "keyframe_effect_slider"
                 )
             }
 
@@ -1247,19 +1245,15 @@ private fun KeyframeBottomPropertiesSection(
                     }
                 }
 
-                Slider(
+                PrecisionRulerDialSlider(
+                    label = "Size (%)",
+                    valueText = "${(uiState.displayScale * 100f).roundToInt()}%",
                     value = uiState.displayScale,
                     onValueChange = onScaleChange,
                     valueRange = 0.25f..2.5f,
-                    colors = SliderDefaults.colors(
-                        thumbColor = VideoStarWhite,
-                        activeTrackColor = ClassicRed,
-                        inactiveTrackColor = Color(0xFFDADAE0)
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(26.dp)
-                        .testTag("keyframe_size_slider")
+                    defaultValue = 1.0f,
+                    height = 40.dp,
+                    sliderTestTag = "keyframe_size_slider"
                 )
             }
 
@@ -1351,36 +1345,36 @@ private fun KeyframeBottomPropertiesSection(
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         )
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("Rot X ${uiState.displayRotationX.roundToInt()}°", fontSize = 11.sp, color = VideoStarInkMuted, modifier = Modifier.width(66.dp))
-                        Slider(
-                            value = uiState.displayRotationX,
-                            onValueChange = onRotationXChange,
-                            valueRange = -75f..75f,
-                            colors = SliderDefaults.colors(thumbColor = VideoStarWhite, activeTrackColor = ClassicGreen),
-                            modifier = Modifier.weight(1f).height(22.dp).testTag("keyframe_rot_x_slider")
-                        )
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("Rot Y ${uiState.displayRotationY.roundToInt()}°", fontSize = 11.sp, color = VideoStarInkMuted, modifier = Modifier.width(66.dp))
-                        Slider(
-                            value = uiState.displayRotationY,
-                            onValueChange = onRotationYChange,
-                            valueRange = -75f..75f,
-                            colors = SliderDefaults.colors(thumbColor = VideoStarWhite, activeTrackColor = ClassicGreen),
-                            modifier = Modifier.weight(1f).height(22.dp).testTag("keyframe_rot_y_slider")
-                        )
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("FOV ${uiState.displayPerspectiveFov.roundToInt()}°", fontSize = 11.sp, color = VideoStarInkMuted, modifier = Modifier.width(66.dp))
-                        Slider(
-                            value = uiState.displayPerspectiveFov,
-                            onValueChange = onPerspectiveFovChange,
-                            valueRange = 25f..90f,
-                            colors = SliderDefaults.colors(thumbColor = VideoStarWhite, activeTrackColor = ClassicRed),
-                            modifier = Modifier.weight(1f).height(22.dp).testTag("keyframe_fov_slider")
-                        )
-                    }
+                    PrecisionRulerDialSlider(
+                        label = "Rot X",
+                        valueText = "${uiState.displayRotationX.roundToInt()}°",
+                        value = uiState.displayRotationX,
+                        onValueChange = onRotationXChange,
+                        valueRange = -75f..75f,
+                        defaultValue = 0f,
+                        height = 38.dp,
+                        sliderTestTag = "keyframe_rot_x_slider"
+                    )
+                    PrecisionRulerDialSlider(
+                        label = "Rot Y",
+                        valueText = "${uiState.displayRotationY.roundToInt()}°",
+                        value = uiState.displayRotationY,
+                        onValueChange = onRotationYChange,
+                        valueRange = -75f..75f,
+                        defaultValue = 0f,
+                        height = 38.dp,
+                        sliderTestTag = "keyframe_rot_y_slider"
+                    )
+                    PrecisionRulerDialSlider(
+                        label = "FOV",
+                        valueText = "${uiState.displayPerspectiveFov.roundToInt()}°",
+                        value = uiState.displayPerspectiveFov,
+                        onValueChange = onPerspectiveFovChange,
+                        valueRange = 25f..90f,
+                        defaultValue = 45f,
+                        height = 38.dp,
+                        sliderTestTag = "keyframe_fov_slider"
+                    )
                 }
             }
         }
@@ -1392,6 +1386,8 @@ private fun HorizontalJogDial(
     rotationDegrees: Float,
     onRotateDelta: (Float) -> Unit
 ) {
+    val haptics = rememberStudioTickHaptics()
+    var accumulatedDrag by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
     Surface(
         shape = RoundedCornerShape(8.dp),
         color = Color(0xFFEEEEF2),
@@ -1400,9 +1396,17 @@ private fun HorizontalJogDial(
             .fillMaxWidth()
             .height(38.dp)
             .pointerInput(Unit) {
-                detectHorizontalDragGestures { change, dragAmount ->
+                detectHorizontalDragGestures(
+                    onDragStart = { accumulatedDrag = 0f }
+                ) { change, dragAmount ->
                     change.consume()
-                    onRotateDelta(dragAmount * 0.45f)
+                    val deltaDeg = dragAmount * 0.45f
+                    accumulatedDrag += deltaDeg
+                    if (kotlin.math.abs(accumulatedDrag) >= 2f) {
+                        accumulatedDrag = 0f
+                        haptics.tick()
+                    }
+                    onRotateDelta(deltaDeg)
                 }
             }
             .testTag("keyframe_jog_dial")

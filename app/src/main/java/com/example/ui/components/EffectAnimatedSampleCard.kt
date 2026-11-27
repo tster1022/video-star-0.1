@@ -104,31 +104,23 @@ fun rememberSceneSampleThumbnail(clip: MediaClip?): ImageBitmap? {
         }
         value = withContext(Dispatchers.IO) {
             runCatching {
-                val parsed = Uri.parse(uriStr)
                 val rawBmp: Bitmap? = if (clip is MediaClip.Video) {
-                    val retriever = MediaMetadataRetriever()
-                    try {
-                        val path = parsed.path
-                        if (parsed.scheme == "file" && path != null && File(path).exists()) {
-                            retriever.setDataSource(path)
-                        } else {
-                            retriever.setDataSource(context, parsed)
-                        }
-                        retriever.getFrameAtTime(clip.startTrimMs * 1000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                    } finally {
-                        runCatching { retriever.release() }
-                    }
+                    com.example.data.MediaImportHelper.extractVideoFrame(
+                        uriString = uriStr,
+                        timeMs = clip.startTrimMs,
+                        context = context,
+                        maxDimPx = 192
+                    )
                 } else {
-                    val path = parsed.path
-                    if (parsed.scheme == "file" && path != null && File(path).exists()) {
-                        BitmapFactory.decodeFile(path)
-                    } else {
-                        context.contentResolver.openInputStream(parsed)?.use { BitmapFactory.decodeStream(it) }
-                    }
+                    com.example.data.MediaImportHelper.decodeSampledBitmap(
+                        uriString = uriStr,
+                        context = context,
+                        maxDimPx = 192
+                    )
                 }
                 rawBmp?.let { bmp ->
                     val scaled = Bitmap.createScaledBitmap(bmp, 144, 144, true)
-                    if (scaled !== bmp) bmp.recycle()
+                    if (scaled !== bmp && clip !is MediaClip.Video && !bmp.isRecycled) bmp.recycle()
                     val img = scaled.asImageBitmap()
                     SceneThumbCache.put(uriStr, img)
                     img
@@ -236,34 +228,45 @@ private fun AnimatedSamplePreviewContent(
     val alphaMain: Float
 
     when {
-        effectId == "hard_shake" || motionId == "shake_h" -> {
+        effectId in setOf("hard_shake", "am_auto_shake", "am_random_jitter") || motionId == "shake_h" -> {
             tx = sin(phase * 4f) * 9f
-            ty = if (effectId == "hard_shake") cos(phase * 3f) * 7f else 0f
-            sc = 1.05f; rotZ = 0f; rotY = 0f; rotX = 0f; alphaMain = 1f
+            ty = if (effectId in setOf("hard_shake", "am_auto_shake", "am_random_jitter")) cos(phase * 3f) * 7f else 0f
+            sc = 1.05f; rotZ = if (effectId == "am_random_jitter") sin(phase * 3f) * 8f else 0f; rotY = 0f; rotX = 0f; alphaMain = 1f
         }
         motionId == "shake_v" -> {
             tx = 0f; ty = sin(phase * 4f) * 9f; sc = 1.05f; rotZ = 0f; rotY = 0f; rotX = 0f; alphaMain = 1f
         }
-        effectId == "smooth_shake" || motionId == "drift" -> {
+        effectId in setOf("smooth_shake", "am_random_displacement", "am_oscillate", "am_offset") || motionId == "drift" -> {
             tx = sin(phase) * 7f; ty = cos(phase * 0.8f) * 6f
             sc = 1.06f; rotZ = sin(phase) * 4f; rotY = 0f; rotX = 0f; alphaMain = 1f
         }
-        motionId == "pendulum" -> {
-            tx = sin(phase) * 5f; ty = 0f; sc = 1.02f; rotZ = sin(phase) * 16f; rotY = 0f; rotX = 0f; alphaMain = 1f
+        effectId == "am_swing" || motionId == "pendulum" -> {
+            tx = sin(phase) * 5f; ty = 0f; sc = 1.02f; rotZ = sin(phase) * 18f; rotY = 0f; rotX = 0f; alphaMain = 1f
         }
-        effectId == "zoom_pulse" || effectId == "radial_zoom_blur" || transitionId == "zoom_blur" || motionId == "zoom_bounce" || motionId == "pulse" -> {
+        effectId in setOf("zoom_pulse", "radial_zoom_blur", "am_pulse_size", "am_scale_assist") || transitionId == "zoom_blur" || motionId == "zoom_bounce" || motionId == "pulse" -> {
             val pulse = abs(sin(phase))
             tx = 0f; ty = 0f
             sc = 1f + pulse * (if (transitionId == "zoom_blur") 0.45f else 0.28f)
             rotZ = 0f; rotY = 0f; rotX = 0f; alphaMain = 1f
         }
-        effectId == "spin_vortex" || transitionId == "zoom_spin" -> {
+        effectId in setOf("spin_vortex", "am_spin") || transitionId == "zoom_spin" -> {
             tx = 0f; ty = 0f
             sc = if (transitionId == "zoom_spin") 1f + sin(phase * 0.5f) * 0.25f else 1.08f
             rotZ = t * 360f; rotY = 0f; rotX = 0f; alphaMain = 1f
         }
-        transitionId == "cube_left" || transitionId == "cube_rotate" -> {
-            tx = -t * 14f; ty = 0f; sc = 0.9f; rotZ = 0f; rotY = -t * 90f; rotX = 0f; alphaMain = 1f - t * 0.65f
+        effectId in setOf("am_3d_flip_layer") || transitionId == "cube_left" || transitionId == "cube_rotate" -> {
+            tx = -t * 10f; ty = 0f; sc = 0.9f; rotZ = 0f; rotY = sin(phase) * 52f; rotX = 0f; alphaMain = 1f
+        }
+        effectId?.startsWith("am_3d_") == true -> {
+            tx = 0f; ty = 0f; sc = 0.9f
+            rotZ = sin(phase * 0.5f) * 12f
+            rotY = sin(phase) * 38f
+            rotX = cos(phase) * 26f
+            alphaMain = 1f
+        }
+        effectId in setOf("am_blink", "am_flicker", "am_fade_in_out", "am_pulse_opacity") -> {
+            tx = 0f; ty = 0f; sc = 1f; rotZ = 0f; rotY = 0f; rotX = 0f
+            alphaMain = if (effectId == "am_blink") (if (sin(phase * 2f) > 0f) 1f else 0.2f) else 0.35f + 0.65f * abs(sin(phase))
         }
         transitionId == "cube_right" -> {
             tx = t * 14f; ty = 0f; sc = 0.9f; rotZ = 0f; rotY = t * 90f; rotX = 0f; alphaMain = 1f - t * 0.65f
@@ -277,8 +280,8 @@ private fun AnimatedSamplePreviewContent(
         transitionId == "slide_left" || transitionId == "slide_blur" -> {
             tx = -t * 54f; ty = 0f; sc = 1f; rotZ = 0f; rotY = 0f; rotX = 0f; alphaMain = 1f
         }
-        effectId == "motion_tile" -> {
-            tx = sin(phase) * 12f; ty = cos(phase) * 8f; sc = 0.72f; rotZ = 0f; rotY = 0f; rotX = 0f; alphaMain = 1f
+        effectId in setOf("motion_tile", "am_tiles", "am_grid_repeat", "am_linear_repeat", "am_radial_repeat", "am_repeat", "am_repeat_along_path", "am_scatter_field", "am_scatter_repeat") -> {
+            tx = sin(phase) * 8f; ty = cos(phase) * 6f; sc = 0.68f; rotZ = 0f; rotY = 0f; rotX = 0f; alphaMain = 1f
         }
         else -> {
             tx = 0f; ty = 0f; sc = 1f; rotZ = 0f; rotY = 0f; rotX = 0f; alphaMain = 1f
@@ -286,10 +289,10 @@ private fun AnimatedSamplePreviewContent(
     }
 
     val colorFilter: ColorFilter? = when (effectId) {
-        "bw" -> ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(1f - (0.5f + 0.5f * sin(phase))) })
-        "hue_shift" -> ColorFilter.colorMatrix(ColorMatrix().apply { setToRotateRed(t * 360f) })
+        "bw", "am_luma_key" -> ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(1f - (0.5f + 0.5f * sin(phase))) })
+        "hue_shift", "am_iridescence", "am_channel_remap_hsv", "am_channel_remap_rgb" -> ColorFilter.colorMatrix(ColorMatrix().apply { setToRotateRed(t * 360f) })
         "invert" -> if (sin(phase) > 0f) ColorFilter.colorMatrix(ColorMatrix().apply { setToScale(-1f, -1f, -1f, 1f) }) else null
-        "duotone" -> ColorFilter.tint(Color(0xFFFF2A85).copy(alpha = 0.45f), BlendMode.SrcAtop)
+        "duotone", "am_chroma_key", "am_adv_chroma_key", "am_key_spill_cleaner" -> ColorFilter.tint(Color(0xFF00D840).copy(alpha = 0.35f), BlendMode.SrcAtop)
         else -> null
     }
 
@@ -312,7 +315,7 @@ private fun AnimatedSamplePreviewContent(
         }
 
         // RGB Split animated ghost channels
-        if (effectId == "rgb_split" || effectId == "glitch") {
+        if (effectId in setOf("rgb_split", "glitch", "am_omino_glass", "am_echo_keyframes")) {
             val shift = (4f + 4f * abs(sin(phase * 2f)))
             SampleEmblemOrThumbnail(
                 thumbnail = thumbnail,
@@ -335,7 +338,7 @@ private fun AnimatedSamplePreviewContent(
         }
 
         // Tile grid 2x2 live preview
-        if (effectId == "tile_grid") {
+        if (effectId in setOf("tile_grid", "am_grid_repeat", "am_tile_rotate", "am_hex_tiling")) {
             androidx.compose.foundation.layout.Column(modifier = Modifier.fillMaxSize()) {
                 repeat(2) {
                     androidx.compose.foundation.layout.Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -346,6 +349,7 @@ private fun AnimatedSamplePreviewContent(
                                 colorFilter = null,
                                 modifier = Modifier.weight(1f).fillMaxSize().graphicsLayer {
                                     translationX = sin(phase) * 3f
+                                    if (effectId == "am_tile_rotate") rotationZ = sin(phase) * 28f
                                 }
                             )
                         }
@@ -373,25 +377,34 @@ private fun AnimatedSamplePreviewContent(
             )
         }
 
-        // Procedural Overlay Animations for Ripple, Kaleidoscope, Mirror, VHS, Glitch, Wipe, Flash, Vignette, Halftone
+        // Procedural Overlay Animations for Ripple, Kaleidoscope, Mirror, VHS, Glitch, Wipe, Flash, Vignette, Halftone, Procedural, Text, 3D
         Canvas(modifier = Modifier.fillMaxSize()) {
             when {
-                effectId in setOf("exposure_flash", "glow_bloom") || transitionId in setOf("white_flash", "warm_leak", "luminate") -> {
-                    val flash = abs(sin(phase)) * 0.78f
+                effectId in setOf("exposure_flash", "glow_bloom", "am_lens_flare", "am_energy_beam", "am_lightning") || transitionId in setOf("white_flash", "warm_leak", "luminate") -> {
+                    val flash = abs(sin(phase)) * 0.75f
                     val col = when (transitionId) {
                         "warm_leak" -> Color(0xFFFF9100)
                         "luminate" -> Color(0xFFFF4081)
-                        else -> Color.White
+                        else -> if (effectId in setOf("am_energy_beam", "am_lightning")) Color(0xFF00E5FF) else Color.White
                     }
-                    drawRect(col.copy(alpha = flash))
+                    if (effectId in setOf("am_energy_beam", "am_lightning")) {
+                        drawLine(
+                            color = col,
+                            start = Offset(size.width * 0.12f, size.height * (0.25f + 0.1f * sin(phase))),
+                            end = Offset(size.width * 0.88f, size.height * (0.75f - 0.1f * cos(phase))),
+                            strokeWidth = 3.dp.toPx()
+                        )
+                    } else {
+                        drawRect(col.copy(alpha = flash))
+                    }
                 }
-                effectId in setOf("ripple", "turbulent_displace", "ripple_dissolve") || transitionId == "ripple_dissolve" -> {
+                effectId in setOf("ripple", "turbulent_displace", "am_turbulent_displace", "am_wave_warp", "am_polar_displace", "ripple_dissolve") || transitionId == "ripple_dissolve" -> {
                     val r1 = (t * size.minDimension * 0.7f).coerceAtLeast(2f)
                     val r2 = (((t + 0.5f) % 1f) * size.minDimension * 0.7f).coerceAtLeast(2f)
                     drawCircle(Color.White.copy(alpha = (1f - t) * 0.75f), radius = r1, style = Stroke(2.dp.toPx()))
                     drawCircle(Color(0xFF00E5FF).copy(alpha = (1f - ((t + 0.5f) % 1f)) * 0.7f), radius = r2, style = Stroke(1.8.dp.toPx()))
                 }
-                effectId in setOf("twirl", "bulge_pinch", "fisheye") -> {
+                effectId in setOf("twirl", "bulge_pinch", "fisheye", "am_swirl", "am_pinch_bulge", "am_inner_pinch_bulge", "am_squeeze", "am_polar_coords") -> {
                     val sweep = 180f + 160f * sin(phase)
                     drawArc(
                         color = Color.White.copy(alpha = 0.65f),
@@ -401,13 +414,13 @@ private fun AnimatedSamplePreviewContent(
                         style = Stroke(2.2.dp.toPx())
                     )
                 }
-                effectId in setOf("mirror_lr", "mirror_tb", "quad_mirror", "kaleidoscope") -> {
+                effectId in setOf("mirror_lr", "mirror_tb", "quad_mirror", "kaleidoscope", "am_mirror", "am_kaleidoscope") -> {
                     val pulsePos = 0.5f + 0.14f * sin(phase)
                     drawLine(Color.White.copy(alpha = 0.75f), Offset(size.width * pulsePos, 0f), Offset(size.width * pulsePos, size.height), 1.5.dp.toPx())
-                    if (effectId != "mirror_lr") {
+                    if (effectId != "mirror_lr" && effectId != "am_mirror") {
                         drawLine(Color.White.copy(alpha = 0.75f), Offset(0f, size.height * (1f - pulsePos)), Offset(size.width, size.height * (1f - pulsePos)), 1.5.dp.toPx())
                     }
-                    if (effectId == "kaleidoscope") {
+                    if (effectId == "kaleidoscope" || effectId == "am_kaleidoscope") {
                         val cx = size.width / 2f
                         val cy = size.height / 2f
                         for (i in 0 until 6) {
@@ -421,20 +434,20 @@ private fun AnimatedSamplePreviewContent(
                         }
                     }
                 }
-                effectId in setOf("vhs_tape", "scanlines", "glitch", "pixelate", "film_grain", "halftone") -> {
+                effectId in setOf("vhs_tape", "scanlines", "glitch", "pixelate", "film_grain", "halftone", "am_pixelate", "am_block_noise", "am_checker", "am_grid", "am_stripes", "am_dots", "am_block_dissolve") -> {
                     var y = 0f
                     while (y < size.height) {
                         drawLine(Color.Black.copy(alpha = 0.35f), Offset(0f, y), Offset(size.width, y), 1.2.dp.toPx())
-                        y += 5.dp.toPx()
+                        y += 6.dp.toPx()
                     }
                     val bandY = t * size.height
                     drawRect(
-                        color = (if (effectId == "glitch") Color(0xFF00E5FF) else Color.White).copy(alpha = 0.45f),
+                        color = (if (effectId in setOf("glitch", "am_grid", "am_dots")) Color(0xFF00E5FF) else Color.White).copy(alpha = 0.45f),
                         topLeft = Offset(0f, bandY),
-                        size = Size(size.width, 6.dp.toPx())
+                        size = Size(size.width, 5.dp.toPx())
                     )
                 }
-                effectId == "vignette" -> {
+                effectId in setOf("vignette", "am_vignette", "am_feather") -> {
                     drawRect(
                         brush = Brush.radialGradient(
                             colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f + 0.25f * abs(sin(phase)))),
@@ -442,19 +455,27 @@ private fun AnimatedSamplePreviewContent(
                         )
                     )
                 }
-                transitionId == "wipe" -> {
+                effectId == "am_wipe" || transitionId == "wipe" -> {
                     drawRect(
                         color = Color(0xFF1A1A22),
                         topLeft = Offset(0f, 0f),
                         size = Size(size.width * t, size.height)
                     )
                 }
-                transitionId == "radial_wipe" -> {
+                effectId == "am_radial_wipe" || transitionId == "radial_wipe" -> {
                     drawArc(
-                        color = Color(0xFF2E7D32).copy(alpha = 0.55f),
+                        color = Color(0xFF2E7D32).copy(alpha = 0.65f),
                         startAngle = -90f,
                         sweepAngle = t * 360f,
                         useCenter = true
+                    )
+                }
+                effectId?.startsWith("am_text_") == true -> {
+                    drawRoundRect(
+                        color = Color(0xFF00E5FF).copy(alpha = 0.7f),
+                        topLeft = Offset(size.width * 0.16f, size.height * 0.4f),
+                        size = Size(size.width * 0.68f * (0.4f + 0.6f * t), 6.dp.toPx()),
+                        cornerRadius = CornerRadius(3.dp.toPx())
                     )
                 }
                 effectId in setOf("dir_motion_blur", "gaussian_blur", "lens_bokeh", "sharpen_clarity") -> {

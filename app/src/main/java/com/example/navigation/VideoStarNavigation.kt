@@ -13,6 +13,7 @@ import androidx.navigation.toRoute
 import com.example.ui.screens.adjust.AdjustPhotoScreen
 import com.example.ui.screens.adjust.AdjustVideoScreen
 import com.example.ui.screens.effects.EffectsStudioScreen
+import com.example.ui.screens.effects.ShaderGalleryScreen
 import com.example.ui.screens.graphs.KeyframeGraphsScreen
 import com.example.ui.screens.home.HomeScreen
 import com.example.ui.screens.keyframe.KeyframeEditorScreen
@@ -26,6 +27,9 @@ import com.example.ui.screens.timing.TimingScreen
 import com.example.ui.screens.transform.TransformScreen
 import com.example.ui.screens.velocity.VelocityScreen
 import com.example.ui.screens.workspace.WorkspaceScreen
+import com.example.data.VideoStarRepository
+import com.example.model.EffectCatalogScope
+import com.example.model.StudioLayoutMode
 import com.example.ui.theme.VideoStarTheme
 import com.example.viewmodel.SharedProjectViewModel
 import kotlinx.serialization.Serializable
@@ -58,7 +62,7 @@ data class AdjustPhotoRoute(
 )
 
 @Serializable
-data class LayersRoute(val projectId: String)
+data class LayersRoute(val projectId: String, val sceneIndex: Int? = null)
 
 @Serializable
 data class KeyframeRoute(val projectId: String, val layerId: String)
@@ -80,7 +84,15 @@ data class EffectsStudioRoute(
     val projectId: String,
     val sceneIndices: List<Int> = listOf(0),
     val targetLayerId: String? = null,
-    val isDarkTheme: Boolean = false
+    val isDarkTheme: Boolean = false,
+    val catalogScope: EffectCatalogScope = EffectCatalogScope.ALL
+)
+
+@Serializable
+data class ShaderGalleryRoute(
+    val projectId: String,
+    val sceneIndex: Int = 0,
+    val targetLayerId: String? = null
 )
 
 @Serializable
@@ -93,7 +105,7 @@ data class MixRoute(val projectId: String, val sceneIndex: Int = 0)
 data class TimingRoute(val projectId: String, val sceneIndex: Int = 0)
 
 @Serializable
-data class MultiLayerRoute(val projectId: String)
+data class MultiLayerRoute(val projectId: String, val sceneIndex: Int? = null)
 
 @Composable
 fun VideoStarNavHost(
@@ -105,7 +117,9 @@ fun VideoStarNavHost(
     val currentRoute = backStackEntry?.destination?.route ?: ""
     val isEffectsDark = currentRoute.contains("EffectsStudioRoute") &&
         runCatching { backStackEntry?.toRoute<EffectsStudioRoute>()?.isDarkTheme == true }.getOrDefault(false)
-    val isDarkEditor = currentRoute.contains("MultiLayerRoute") || isEffectsDark
+    val isDarkEditor = currentRoute.contains("MultiLayerRoute") ||
+        currentRoute.contains("ShaderGalleryRoute") ||
+        isEffectsDark
 
     LaunchedEffect(isDarkEditor) {
         onDarkModeChanged(isDarkEditor)
@@ -179,6 +193,45 @@ fun VideoStarNavHost(
                     onOpenReEffect = { id, sceneIndices ->
                         navController.navigate(ReEffectRoute(projectId = id, sceneIndices = sceneIndices))
                     },
+                    onOpenEffectsStudio = { id, sceneIndices, isDarkTheme ->
+                        val proj = VideoStarRepository.getProjectById(id)
+                        val layout = proj?.studioLayout ?: StudioLayoutMode.NOVA
+                        val scope = if (layout == StudioLayoutMode.AFTER_EFFECTS) {
+                            EffectCatalogScope.AFTER_EFFECTS_ONLY
+                        } else {
+                            EffectCatalogScope.VIDEO_STAR_ONLY
+                        }
+                        val targetAeLayer = if (layout == StudioLayoutMode.AFTER_EFFECTS) {
+                            proj?.resolveActiveAeLayer(0L)?.id
+                        } else null
+                        navController.navigate(
+                            EffectsStudioRoute(
+                                projectId = id,
+                                sceneIndices = sceneIndices,
+                                targetLayerId = targetAeLayer,
+                                isDarkTheme = isDarkTheme,
+                                catalogScope = scope
+                            )
+                        )
+                    },
+                    onOpenEffectsStudioForTarget = { id, sceneIndices, targetLayerId, isDarkTheme ->
+                        val proj = VideoStarRepository.getProjectById(id)
+                        val layout = proj?.studioLayout ?: StudioLayoutMode.NOVA
+                        val scope = if (layout == StudioLayoutMode.AFTER_EFFECTS) {
+                            EffectCatalogScope.AFTER_EFFECTS_ONLY
+                        } else {
+                            EffectCatalogScope.VIDEO_STAR_ONLY
+                        }
+                        navController.navigate(
+                            EffectsStudioRoute(
+                                projectId = id,
+                                sceneIndices = sceneIndices,
+                                targetLayerId = targetLayerId,
+                                isDarkTheme = isDarkTheme,
+                                catalogScope = scope
+                            )
+                        )
+                    },
                     onOpenTransform = { id, sceneIndex ->
                         navController.navigate(TransformRoute(projectId = id, sceneIndex = sceneIndex))
                     },
@@ -188,8 +241,20 @@ fun VideoStarNavHost(
                     onOpenLayers = { id ->
                         navController.navigate(LayersRoute(projectId = id))
                     },
+                    onOpenLayersForScene = { id, sceneIndex ->
+                        navController.navigate(LayersRoute(projectId = id, sceneIndex = sceneIndex))
+                    },
                     onOpenTiming = { id, sceneIndex ->
                         navController.navigate(TimingRoute(projectId = id, sceneIndex = sceneIndex))
+                    },
+                    onOpenShaderGallery = { id, sceneIndex, targetLayerId ->
+                        navController.navigate(
+                            ShaderGalleryRoute(
+                                projectId = id,
+                                sceneIndex = sceneIndex,
+                                targetLayerId = targetLayerId
+                            )
+                        )
                     }
                 )
             }
@@ -270,6 +335,7 @@ fun VideoStarNavHost(
                 val route = entry.toRoute<LayersRoute>()
                 LayersScreen(
                     projectId = route.projectId,
+                    targetSceneIndex = route.sceneIndex,
                     sharedProjectViewModel = sharedProjectViewModel,
                     onCancel = {
                         navController.popBackStack()
@@ -284,8 +350,10 @@ fun VideoStarNavHost(
                         navController.navigate(
                             EffectsStudioRoute(
                                 projectId = projectId,
+                                sceneIndices = listOf(route.sceneIndex ?: 0),
                                 targetLayerId = layerId,
-                                isDarkTheme = false
+                                isDarkTheme = false,
+                                catalogScope = EffectCatalogScope.VIDEO_STAR_ONLY
                             )
                         )
                     },
@@ -310,7 +378,7 @@ fun VideoStarNavHost(
                         )
                     },
                     onSwitchToDarkTheme = {
-                        navController.navigate(MultiLayerRoute(projectId = route.projectId)) {
+                        navController.navigate(MultiLayerRoute(projectId = route.projectId, sceneIndex = route.sceneIndex)) {
                             popUpTo<LayersRoute> { inclusive = true }
                             launchSingleTop = true
                         }
@@ -387,8 +455,36 @@ fun VideoStarNavHost(
                     sceneIndices = route.sceneIndices,
                     targetLayerId = route.targetLayerId,
                     isDarkTheme = route.isDarkTheme,
+                    catalogScope = route.catalogScope,
                     onCancel = { navController.popBackStack() },
                     onCreated = { navController.popBackStack() }
+                )
+            }
+
+            composable<ShaderGalleryRoute> { entry ->
+                val route = entry.toRoute<ShaderGalleryRoute>()
+                ShaderGalleryScreen(
+                    projectId = route.projectId,
+                    sceneIndex = route.sceneIndex,
+                    targetLayerId = route.targetLayerId,
+                    onBack = { navController.popBackStack() },
+                    onOpenEffectsStudio = { sceneIndices, targetLayerId ->
+                        val layout = VideoStarRepository.getProjectById(route.projectId)?.studioLayout ?: StudioLayoutMode.NOVA
+                        val scope = if (layout == StudioLayoutMode.AFTER_EFFECTS) {
+                            EffectCatalogScope.AFTER_EFFECTS_ONLY
+                        } else {
+                            EffectCatalogScope.VIDEO_STAR_ONLY
+                        }
+                        navController.navigate(
+                            EffectsStudioRoute(
+                                projectId = route.projectId,
+                                sceneIndices = sceneIndices,
+                                targetLayerId = targetLayerId,
+                                isDarkTheme = true,
+                                catalogScope = scope
+                            )
+                        )
+                    }
                 )
             }
 
@@ -426,6 +522,7 @@ fun VideoStarNavHost(
                 val route = entry.toRoute<MultiLayerRoute>()
                 MultiLayerScreen(
                     projectId = route.projectId,
+                    targetSceneIndex = route.sceneIndex,
                     sharedProjectViewModel = sharedProjectViewModel,
                     onCancel = { navController.popBackStack() },
                     onCreated = { navController.popBackStack() },
@@ -453,13 +550,15 @@ fun VideoStarNavHost(
                         navController.navigate(
                             EffectsStudioRoute(
                                 projectId = projectId,
+                                sceneIndices = listOf(route.sceneIndex ?: 0),
                                 targetLayerId = layerId,
-                                isDarkTheme = true
+                                isDarkTheme = true,
+                                catalogScope = EffectCatalogScope.VIDEO_STAR_ONLY
                             )
                         )
                     },
                     onSwitchToLightTheme = {
-                        navController.navigate(LayersRoute(projectId = route.projectId)) {
+                        navController.navigate(LayersRoute(projectId = route.projectId, sceneIndex = route.sceneIndex)) {
                             popUpTo<MultiLayerRoute> { inclusive = true }
                             launchSingleTop = true
                         }

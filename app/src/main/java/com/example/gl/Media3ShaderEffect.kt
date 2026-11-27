@@ -11,11 +11,15 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.BaseGlShaderProgram
 import androidx.media3.effect.GlEffect
 import androidx.media3.effect.GlShaderProgram
+import com.example.engine.effects.shaders.ShaderUniformEvaluator
+import com.example.model.PARAM_KEY_INTENSITY
+import com.example.model.PARAM_KEY_OPACITY
 import com.example.model.ShaderEffectPass
 
 /**
- * Media3 GlEffect bridge that executes any Video Star GLSL ES 3.00 ShaderEffectPass
- * inside Media3's Transformer hardware export pipeline, including animated EffectKeyframe evaluation.
+ * Media3 GlEffect bridge that executes any Video Star or Alight Motion GLSL ES 3.00
+ * ShaderEffectPass inside Media3's Transformer hardware export pipeline, including
+ * animated float, color, 2D XY, and Cubic Bezier/Hold keyframe evaluation.
  */
 @UnstableApi
 class ShaderPassGlEffect(
@@ -36,9 +40,9 @@ class ShaderPassGlEffect(
 
     override fun isNoOp(inputWidth: Int, inputHeight: Int): Boolean {
         if (!pass.isEnabled || pass.effectId == "none") return true
-        val intensityKfs = pass.keyframesForProperty(com.example.model.PARAM_KEY_INTENSITY)
+        val intensityKfs = pass.keyframesForProperty(PARAM_KEY_INTENSITY)
         val maxIntensity = if (intensityKfs.isEmpty()) pass.intensity else intensityKfs.maxOf { it.value }
-        val opacityKfs = pass.paramKeyframes[com.example.model.PARAM_KEY_OPACITY].orEmpty()
+        val opacityKfs = pass.paramKeyframes[PARAM_KEY_OPACITY].orEmpty()
         val maxOpacity = if (opacityKfs.isEmpty()) pass.passOpacity else opacityKfs.maxOf { it.value }
         return (maxIntensity * maxOpacity) <= 0.005f
     }
@@ -54,6 +58,7 @@ private class ShaderPassGlShaderProgram(
     private var width = 0
     private var height = 0
     private val identityMatrix = FloatArray(16).apply { Matrix.setIdentityM(this, 0) }
+    private val activeProgramHolder = IntArray(1)
 
     private val glProgram: GlProgram by lazy {
         try {
@@ -86,23 +91,43 @@ private class ShaderPassGlShaderProgram(
     override fun drawFrame(inputTexId: Int, presentationTimeUs: Long) {
         try {
             val localProgress = (presentationTimeUs.toFloat() / sceneDurationUs.toFloat()).coerceIn(0f, 1f)
-            val opacity = pass.evaluateOpacityAt(localProgress)
-            val intensity = (pass.evaluateIntensityAt(localProgress) * opacity).coerceIn(0f, 1f)
-            val timeSec = presentationTimeUs / 1_000_000f
-            val uniformParams = ShaderLibrary.extractUniformParams(pass, localProgress)
+            val durationSec = (sceneDurationUs / 1_000_000f).coerceAtLeast(0.2f)
+            val evaluated = ShaderUniformEvaluator.evaluate(
+                pass = pass,
+                progress = localProgress,
+                sceneDurationSec = durationSec
+            )
 
             glProgram.use()
             glProgram.setSamplerTexIdUniform("uTexture", inputTexId, 0)
+            glProgram.setSamplerTexIdUniform("uBackgroundTex", inputTexId, 1)
+            glProgram.setSamplerTexIdUniform("uHistoryTex", inputTexId, 2)
+            glProgram.setSamplerTexIdUniform("uMaskTex", inputTexId, 3)
             glProgram.setFloatsUniform("uTexMatrix", identityMatrix)
             glProgram.setFloatsUniform("uTexSize", floatArrayOf(width.toFloat(), height.toFloat()))
-            glProgram.setFloatUniform("uTime", timeSec)
-            glProgram.setFloatUniform("uIntensity", intensity)
-            glProgram.setFloatUniform("uParam1", uniformParams[0])
-            glProgram.setFloatUniform("uParam2", uniformParams[1])
-            glProgram.setFloatUniform("uParam3", uniformParams[2])
+            glProgram.setFloatUniform("uTime", evaluated.effectiveTimeSec)
+            glProgram.setFloatUniform("uDuration", durationSec)
+            glProgram.setFloatUniform("uIntensity", evaluated.intensity)
+            glProgram.setFloatUniform("uProgress", evaluated.effectiveProgress)
+            glProgram.setFloatUniform("uParam1", evaluated.legacyParam1)
+            glProgram.setFloatUniform("uParam2", evaluated.legacyParam2)
+            glProgram.setFloatUniform("uParam3", evaluated.legacyParam3)
             glProgram.setFloatsUniform("uTintColor", floatArrayOf(1f, 0.16f, 0.52f, 1f))
             glProgram.setIntUniform("uBlendMode", pass.blendMode.glIndex)
+            glProgram.setIntUniform("uHasMask", 0)
+            glProgram.setIntUniform("uHasBg", 1)
             glProgram.bindAttributesAndUniforms()
+
+            GLES30.glGetIntegerv(GLES30.GL_CURRENT_PROGRAM, activeProgramHolder, 0)
+            val prog = activeProgramHolder[0]
+            if (prog > 0) {
+                val pLoc = GLES30.glGetUniformLocation(prog, "uParams")
+                if (pLoc >= 0) GLES30.glUniform1fv(pLoc, 12, evaluated.params, 0)
+                val cLoc = GLES30.glGetUniformLocation(prog, "uColors")
+                if (cLoc >= 0) GLES30.glUniform4fv(cLoc, 3, evaluated.colors, 0)
+                val mLoc = GLES30.glGetUniformLocation(prog, "uModes")
+                if (mLoc >= 0) GLES30.glUniform1iv(mLoc, 4, evaluated.modes, 0)
+            }
 
             GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
         } catch (e: GlUtil.GlException) {

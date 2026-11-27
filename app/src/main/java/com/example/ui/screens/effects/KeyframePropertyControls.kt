@@ -29,6 +29,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import com.example.ui.components.PrecisionRulerDialSlider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
@@ -50,11 +51,13 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.model.BezierCurveSpec
 import com.example.model.KeyframeEasing
 import com.example.model.ParameterKeyframe
 import com.example.ui.theme.CairoFontFamily
 import com.example.ui.theme.ClassicRed
 import com.example.ui.theme.InterFontFamily
+import java.util.Locale
 import kotlin.math.abs
 
 /**
@@ -291,8 +294,11 @@ internal fun PropertyKeyframeTimelineAndEasingStrip(
     keyframes: List<ParameterKeyframe>,
     previewProgress: Float,
     activeEasing: KeyframeEasing,
+    customBezier: BezierCurveSpec? = null,
+    useEnglishLabels: Boolean = false,
     onSeekProgress: (Float) -> Unit,
     onSelectEasing: (KeyframeEasing) -> Unit,
+    onUpdateCustomBezier: ((BezierCurveSpec) -> Unit)? = null,
     onClearAllForProperty: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -435,13 +441,14 @@ internal fun PropertyKeyframeTimelineAndEasingStrip(
                             leadingIcon = {
                                 EasingMiniCurveIcon(
                                     easing = easing,
+                                    customBezier = if (easing == KeyframeEasing.CUBIC_BEZIER) customBezier else null,
                                     tint = if (selected) colorScheme.onPrimary else colorScheme.primary
                                 )
                             },
                             label = {
                                 Text(
-                                    text = easing.arabicLabel,
-                                    fontFamily = CairoFontFamily,
+                                    text = if (useEnglishLabels) easing.englishLabel else easing.arabicLabel,
+                                    fontFamily = if (useEnglishLabels) InterFontFamily else CairoFontFamily,
                                     fontSize = 11.sp
                                 )
                             },
@@ -453,6 +460,112 @@ internal fun PropertyKeyframeTimelineAndEasingStrip(
                         )
                     }
                 }
+
+                // Visual Cubic Bezier Curve Inspector when CUBIC_BEZIER is active
+                if (activeEasing == KeyframeEasing.CUBIC_BEZIER && onUpdateCustomBezier != null) {
+                    val spec = customBezier ?: KeyframeEasing.CUBIC_BEZIER.toBezierCurveSpec()
+                    CubicBezierCurveMiniEditor(
+                        spec = spec,
+                        onUpdate = onUpdateCustomBezier
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CubicBezierCurveMiniEditor(
+    spec: BezierCurveSpec,
+    onUpdate: (BezierCurveSpec) -> Unit
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = colorScheme.surface.copy(alpha = 0.75f),
+        border = BorderStroke(0.6.dp, colorScheme.outline.copy(alpha = 0.25f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Canvas(
+                modifier = Modifier
+                    .size(72.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(colorScheme.surfaceVariant.copy(alpha = 0.45f))
+            ) {
+                val pad = 8.dp.toPx()
+                val w = size.width - pad * 2f
+                val h = size.height - pad * 2f
+                val p0 = Offset(pad, pad + h)
+                val p3 = Offset(pad + w, pad)
+                val p1 = Offset(pad + spec.p1x.coerceIn(0f, 1f) * w, pad + (1f - spec.p1y) * h)
+                val p2 = Offset(pad + spec.p2x.coerceIn(0f, 1f) * w, pad + (1f - spec.p2y) * h)
+
+                drawLine(colorScheme.outline.copy(alpha = 0.25f), p0, p3, strokeWidth = 1.dp.toPx())
+                drawLine(colorScheme.secondary.copy(alpha = 0.6f), p0, p1, strokeWidth = 1.2.dp.toPx())
+                drawLine(colorScheme.tertiary.copy(alpha = 0.6f), p3, p2, strokeWidth = 1.2.dp.toPx())
+
+                val curvePath = Path().apply {
+                    moveTo(p0.x, p0.y)
+                    cubicTo(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y)
+                }
+                drawPath(curvePath, colorScheme.primary, style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round))
+                drawCircle(colorScheme.secondary, radius = 3.5.dp.toPx(), center = p1)
+                drawCircle(colorScheme.tertiary, radius = 3.5.dp.toPx(), center = p2)
+            }
+
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = String.format(
+                            Locale.US,
+                            "Cubic (%.2f, %.2f, %.2f, %.2f)",
+                            spec.p1x, spec.p1y, spec.p2x, spec.p2y
+                        ),
+                        fontFamily = InterFontFamily,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colorScheme.onSurface
+                    )
+                    PrecisionRulerDialSlider(
+                        label = "P1X",
+                        valueText = String.format(Locale.US, "%.2f", spec.p1x),
+                        value = spec.p1x,
+                        onValueChange = { onUpdate(spec.copy(p1x = it.coerceIn(0.01f, 0.99f))) },
+                        valueRange = 0.01f..0.99f,
+                        height = 34.dp
+                    )
+                    PrecisionRulerDialSlider(
+                        label = "P1Y",
+                        valueText = String.format(Locale.US, "%.2f", spec.p1y),
+                        value = spec.p1y,
+                        onValueChange = { onUpdate(spec.copy(p1y = it)) },
+                        valueRange = -0.3f..1.3f,
+                        height = 34.dp
+                    )
+                    PrecisionRulerDialSlider(
+                        label = "P2X",
+                        valueText = String.format(Locale.US, "%.2f", spec.p2x),
+                        value = spec.p2x,
+                        onValueChange = { onUpdate(spec.copy(p2x = it.coerceIn(0.01f, 0.99f))) },
+                        valueRange = 0.01f..0.99f,
+                        height = 34.dp
+                    )
+                    PrecisionRulerDialSlider(
+                        label = "P2Y",
+                        valueText = String.format(Locale.US, "%.2f", spec.p2y),
+                        value = spec.p2y,
+                        onValueChange = { onUpdate(spec.copy(p2y = it)) },
+                        valueRange = -0.3f..1.3f,
+                        height = 34.dp
+                    )
+                }
             }
         }
     }
@@ -461,6 +574,7 @@ internal fun PropertyKeyframeTimelineAndEasingStrip(
 @Composable
 private fun EasingMiniCurveIcon(
     easing: KeyframeEasing,
+    customBezier: BezierCurveSpec? = null,
     tint: Color
 ) {
     Canvas(modifier = Modifier.size(16.dp)) {
@@ -471,7 +585,7 @@ private fun EasingMiniCurveIcon(
         val steps = 12
         for (i in 0..steps) {
             val u = i / steps.toFloat()
-            val v = easing.evaluate(u).coerceIn(-0.15f, 1.15f)
+            val v = easing.evaluate(u, customBezier).coerceIn(-0.15f, 1.15f)
             val x = pad + u * w
             val y = pad + (1f - v) * h
             if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)

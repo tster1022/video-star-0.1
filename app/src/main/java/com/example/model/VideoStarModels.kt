@@ -91,6 +91,18 @@ enum class WorkspaceTab(val label: String) {
     NEW("جديد")
 }
 
+@Serializable
+enum class StudioLayoutMode(
+    val displayName: String,
+    val statusBadge: String? = null
+) {
+    NOVA("Nova", null),
+    CAPCUT("CapCut", null),
+    BLURRR("Blurrr", "Unavailable for now"),
+    NODE_VIDEO("Node Video", null),
+    AFTER_EFFECTS("After Effects", "Needs a large screen")
+}
+
 enum class MultiLayerTab(val label: String) {
     LAYER_EFFECTS("تأثيرات الطبقة"),
     LAYOUT("التخطيط"),
@@ -144,15 +156,61 @@ enum class EffectCategory(val label: String, val shortLabel: String) {
     COLOR_GLOW("Color & Glow", "Color"),
     DISTORTION_GLITCH("Distortion & Glitch", "Glitch"),
     MIRROR_KALEIDOSCOPE("Mirror & Kaleidoscope", "Mirror"),
-    RETRO_VHS("Retro & VHS", "Retro")
+    RETRO_VHS("Retro & VHS", "Retro"),
+    AM_MOVE_TRANSFORM("Move/Transform", "Move"),
+    AM_DISTORTION_WARP("Distortion/Warp", "Distort"),
+    AM_MATTE_MASK_KEY("Matte/Mask/Key", "Matte"),
+    AM_OPACITY_VISIBILITY("Opacity/Visibility", "Opacity"),
+    AM_PROCEDURAL("Procedural", "Procedural"),
+    AM_REPEAT("Repeat", "Repeat"),
+    AM_THREE_D("3D", "3D"),
+    AM_TEXT("Text", "Text"),
+    AM_OTHER("Other", "Other");
+
+    val isAlightMotion: Boolean
+        get() = name.startsWith("AM_")
 }
 
 enum class EffectStudioTab(val label: String, val arabicLabel: String = label) {
-    ALL("All", "الكل"),
-    COLOR("Color", "ألوان وتوهج"),
-    LAYOUT("Layout", "تخطيط ومرآة"),
-    MOTION("Motion", "حركة وضبابية"),
-    VHS_GLITCH("VHS & Glitch", "VHS وتشويش")
+    ALL("All", "All"),
+    MY_EFFECTS("My Effects", "مؤثراتي"),
+    VIDEO_STAR("Video Star", "Video Star"),
+    MOVE_TRANSFORM("Move/Transform", "Move/Transform"),
+    DISTORTION_WARP("Distortion/Warp", "Distortion/Warp"),
+    MATTE_MASK_KEY("Matte/Mask/Key", "Matte/Mask/Key"),
+    OPACITY_VISIBILITY("Opacity/Visibility", "Opacity/Visibility"),
+    PROCEDURAL("Procedural", "Procedural"),
+    REPEAT("Repeat", "Repeat"),
+    THREE_D("3D", "3D"),
+    TEXT("Text", "Text"),
+    OTHER("Other", "Other");
+
+    companion object {
+        fun tabsForScope(scope: EffectCatalogScope): List<EffectStudioTab> = when (scope) {
+            EffectCatalogScope.ALL -> entries
+            EffectCatalogScope.VIDEO_STAR_ONLY -> listOf(ALL, MY_EFFECTS, VIDEO_STAR)
+            EffectCatalogScope.AFTER_EFFECTS_ONLY -> listOf(
+                ALL,
+                MY_EFFECTS,
+                MOVE_TRANSFORM,
+                DISTORTION_WARP,
+                MATTE_MASK_KEY,
+                OPACITY_VISIBILITY,
+                PROCEDURAL,
+                REPEAT,
+                THREE_D,
+                TEXT,
+                OTHER
+            )
+        }
+    }
+}
+
+@Serializable
+enum class EffectCatalogScope {
+    ALL,
+    VIDEO_STAR_ONLY,
+    AFTER_EFFECTS_ONLY
 }
 
 @Serializable
@@ -161,96 +219,87 @@ enum class EffectBlendMode(
     val arabicLabel: String,
     val glIndex: Int
 ) {
-    NORMAL("normal", "عادي", 0),
-    ADD("add", "إضافة", 1),
-    MULTIPLY("multiply", "ضرب", 2),
-    SCREEN("screen", "شاشة", 3),
-    OVERLAY("overlay", "تراكب", 4)
+    NORMAL("normal", "Normal", 0),
+    ADD("add", "Add", 1),
+    MULTIPLY("multiply", "Multiply", 2),
+    SCREEN("screen", "Screen", 3),
+    OVERLAY("overlay", "Overlay", 4)
 }
 
-fun EffectCatalogItem.toStudioTab(): EffectStudioTab = when {
-    id == "motion_tile" || id == "tile_grid" -> EffectStudioTab.LAYOUT
-    category == EffectCategory.MIRROR_KALEIDOSCOPE -> EffectStudioTab.LAYOUT
-    category == EffectCategory.COLOR_GLOW -> EffectStudioTab.COLOR
-    category == EffectCategory.SHAKE_MOTION || category == EffectCategory.BLUR_FOCUS -> EffectStudioTab.MOTION
-    category == EffectCategory.DISTORTION_GLITCH || category == EffectCategory.RETRO_VHS -> EffectStudioTab.VHS_GLITCH
-    else -> EffectStudioTab.ALL
-}
+fun EffectCatalogItem.isCustomPackEffect(): Boolean =
+    id.startsWith("custom_glsl_") || id.startsWith("custom_xml_")
 
-fun EffectCatalogItem.arabicDisplayName(): String = when (id) {
-    "motion_tile" -> "تكرار الحركة"
-    "hard_shake" -> "اهتزاز قوي"
-    "smooth_shake" -> "اهتزاز ناعم"
-    "zoom_pulse" -> "نبض التكبير"
-    "spin_vortex" -> "دوران دوامة"
-    "tile_grid" -> "شبكة التكرار"
-    "radial_zoom_blur" -> "ضبابية شعاعية"
-    "dir_motion_blur" -> "ضبابية اتجاهية"
-    "gaussian_blur" -> "ضبابية غاوسية"
-    "lens_bokeh" -> "بوكيه العدسة"
-    "sharpen_clarity" -> "وضوح وحدّة"
-    "rgb_split" -> "انقسام RGB"
-    "exposure_flash" -> "ومضة سطوع"
-    "glow_bloom" -> "توهج نيون"
-    "hue_shift" -> "تدرج ألوان"
-    "color_adjust" -> "سطوع وتشبّع"
-    "duotone" -> "ثنائي اللون"
-    "invert" -> "عكس الألوان"
-    "vignette" -> "تظليل الحواف"
-    "bw" -> "أبيض وأسود"
-    "ripple" -> "تموّج مائي"
-    "twirl" -> "دوامة ملتوية"
-    "bulge_pinch" -> "انتفاخ وضغط"
-    "fisheye" -> "عين السمكة"
-    "glitch" -> "خلل رقمي"
-    "pixelate" -> "بكسلّة"
-    "turbulent_displace" -> "موجة مضطربة"
-    "mirror_lr" -> "مرآة يمين/يسار"
-    "mirror_tb" -> "مرآة أعلى/أسفل"
-    "quad_mirror" -> "مرآة رباعية"
-    "kaleidoscope" -> "مشكال"
-    "vhs_tape" -> "شريط VHS"
-    "scanlines" -> "خطوط التلفاز"
-    "film_grain" -> "تحبب الفيلم"
-    "halftone" -> "نقاط كوميك"
-    else -> name
-}
+fun EffectCatalogItem.toStudioTab(): EffectStudioTab =
+    if (isCustomPackEffect()) EffectStudioTab.MY_EFFECTS
+    else when (category) {
+        EffectCategory.SHAKE_MOTION,
+        EffectCategory.BLUR_FOCUS,
+        EffectCategory.COLOR_GLOW,
+        EffectCategory.DISTORTION_GLITCH,
+        EffectCategory.MIRROR_KALEIDOSCOPE,
+        EffectCategory.RETRO_VHS -> EffectStudioTab.VIDEO_STAR
+        EffectCategory.AM_MOVE_TRANSFORM -> EffectStudioTab.MOVE_TRANSFORM
+        EffectCategory.AM_DISTORTION_WARP -> EffectStudioTab.DISTORTION_WARP
+        EffectCategory.AM_MATTE_MASK_KEY -> EffectStudioTab.MATTE_MASK_KEY
+        EffectCategory.AM_OPACITY_VISIBILITY -> EffectStudioTab.OPACITY_VISIBILITY
+        EffectCategory.AM_PROCEDURAL -> EffectStudioTab.PROCEDURAL
+        EffectCategory.AM_REPEAT -> EffectStudioTab.REPEAT
+        EffectCategory.AM_THREE_D -> EffectStudioTab.THREE_D
+        EffectCategory.AM_TEXT -> EffectStudioTab.TEXT
+        EffectCategory.AM_OTHER -> EffectStudioTab.OTHER
+    }
 
-fun EffectParamSpec.arabicDisplayLabel(): String = when (key) {
-    "mirror_edges" -> "عكس الحواف"
-    "offset_x" -> "إزاحة أفقية"
-    "offset_y" -> "إزاحة عمودية"
-    "amplitude" -> "القوة"
-    "frequency" -> "التردد"
-    "decay" -> "التلاشي"
-    "angle" -> "الزاوية"
-    "grid_size" -> "حجم الشبكة"
-    "amount" -> "المقدار"
-    "center_x" -> "مركز البؤرة"
-    "radius" -> "نصف القطر"
-    "highlight" -> "بريق الإضاءة"
-    "distance" -> "مسافة الانقسام"
-    "exposure" -> "التعريض"
-    "hue" -> "درجة اللون"
-    "speed" -> "السرعة"
-    "brightness" -> "السطوع"
-    "contrast" -> "التباين"
-    "saturation" -> "التشبّع"
-    "mix" -> "نسبة المزج"
-    "size" -> "الحجم"
-    "softness" -> "النعومة"
-    "height" -> "الارتفاع"
-    "curvature" -> "الانحناء"
-    "block_size" -> "حجم البكسل"
-    "offset" -> "المحور"
-    "sides" -> "عدد الأوجه"
-    "rotation" -> "الدوران"
-    "tracking" -> "التشويش الخطي"
-    "bleed" -> "نزيف الألوان"
-    "noise" -> "الضوضاء"
-    "density" -> "الكثافة"
-    "dot_size" -> "حجم النقاط"
-    else -> label
+fun EffectCatalogItem.arabicDisplayName(): String =
+    if (category.isAlightMotion || isCustomPackEffect()) name else when (id) {
+        "motion_tile" -> "تكرار الحركة"
+        "hard_shake" -> "اهتزاز قوي"
+        "smooth_shake" -> "اهتزاز ناعم"
+        "zoom_pulse" -> "نبض التكبير"
+        "spin_vortex" -> "دوران دوامة"
+        "tile_grid" -> "شبكة التكرار"
+        "radial_zoom_blur" -> "ضبابية شعاعية"
+        "dir_motion_blur" -> "ضبابية اتجاهية"
+        "gaussian_blur" -> "ضبابية غاوسية"
+        "lens_bokeh" -> "بوكيه العدسة"
+        "sharpen_clarity" -> "وضوح وحدّة"
+        "rgb_split" -> "انقسام RGB"
+        "exposure_flash" -> "ومضة سطوع"
+        "glow_bloom" -> "توهج نيون"
+        "hue_shift" -> "تدرج ألوان"
+        "color_adjust" -> "سطوع وتشبّع"
+        "duotone" -> "ثنائي اللون"
+        "invert" -> "عكس الألوان"
+        "vignette" -> "تظليل الحواف"
+        "bw" -> "أبيض وأسود"
+        "ripple" -> "تموّج مائي"
+        "twirl" -> "دوامة ملتوية"
+        "bulge_pinch" -> "انتفاخ وضغط"
+        "fisheye" -> "عين السمكة"
+        "glitch" -> "خلل رقمي"
+        "pixelate" -> "بكسلّة"
+        "turbulent_displace" -> "موجة مضطربة"
+        "mirror_lr" -> "مرآة يمين/يسار"
+        "mirror_tb" -> "مرآة أعلى/أسفل"
+        "quad_mirror" -> "مرآة رباعية"
+        "kaleidoscope" -> "مشكال"
+        "vhs_tape" -> "شريط VHS"
+        "scanlines" -> "خطوط التلفاز"
+        "film_grain" -> "تحبب الفيلم"
+        "halftone" -> "نقاط كوميك"
+        else -> name
+    }
+
+fun EffectParamSpec.arabicDisplayLabel(): String = label
+
+@Serializable
+enum class EffectParamType {
+    FLOAT,
+    COLOR,
+    POINT_2D_X,
+    POINT_2D_Y,
+    ENUM_MODE,
+    BOOLEAN,
+    TEXT_STRING
 }
 
 @Serializable
@@ -260,7 +309,12 @@ data class EffectParamSpec(
     val defaultValue: Float = 0.5f,
     val minValue: Float = 0f,
     val maxValue: Float = 1f,
-    val unitSuffix: String = ""
+    val unitSuffix: String = "",
+    val paramType: EffectParamType = EffectParamType.FLOAT,
+    val enumOptions: List<String> = emptyList(),
+    val defaultColorArgb: Long = 0xFF00FF44L,
+    val pairedKey: String? = null,
+    val defaultText: String = ""
 )
 
 @Serializable
@@ -271,7 +325,17 @@ data class EffectCatalogItem(
     val defaultIntensity: Float = 0.7f,
     val params: List<EffectParamSpec> = emptyList()
 ) {
-    fun defaultParamMap(): Map<String, Float> = params.associate { it.key to it.defaultValue }
+    fun defaultParamMap(): Map<String, Float> =
+        params.filter { it.paramType != EffectParamType.COLOR && it.paramType != EffectParamType.TEXT_STRING }
+            .associate { it.key to it.defaultValue }
+
+    fun defaultColorMap(): Map<String, Long> =
+        params.filter { it.paramType == EffectParamType.COLOR }
+            .associate { it.key to it.defaultColorArgb }
+
+    fun defaultTextMap(): Map<String, String> =
+        params.filter { it.paramType == EffectParamType.TEXT_STRING }
+            .associate { it.key to it.defaultText }
 }
 
 @Serializable
@@ -290,6 +354,8 @@ data class ShaderEffectPass(
     val category: EffectCategory,
     val intensity: Float = 0.7f,
     val params: Map<String, Float> = emptyMap(),
+    val colorParams: Map<String, Long> = emptyMap(),
+    val textParams: Map<String, String> = emptyMap(),
     val keyframes: List<EffectKeyframe> = emptyList(),
     val paramKeyframes: Map<String, List<ParameterKeyframe>> = emptyMap(),
     val isEnabled: Boolean = true,
@@ -334,6 +400,21 @@ data class ShaderEffectPass(
             maxValue = maxValue
         )
     }
+
+    fun evaluateColorAt(
+        key: String,
+        progress: Float,
+        fallbackArgb: Long = 0xFF00FF44L
+    ): Long {
+        val list = paramKeyframes[key].orEmpty()
+        return interpolateColorKeyframes(
+            keyframes = list,
+            progress = progress,
+            staticArgb = colorParams[key] ?: fallbackArgb
+        )
+    }
+
+    fun textParam(key: String, fallback: String = ""): String = textParams[key] ?: fallback
 
     fun keyframesForProperty(key: String): List<ParameterKeyframe> {
         return if (key == PARAM_KEY_INTENSITY) {
@@ -747,7 +828,17 @@ object EffectCatalog {
         )
     )
 
-    val allEffects: List<EffectCatalogItem> = listOf(noneItem) + shaderEffects
+    val customPackEffects: List<EffectCatalogItem>
+        get() = com.example.engine.packs.CustomPackRepository.dynamicCatalogItems()
+
+    val alightMotionEffects: List<EffectCatalogItem>
+        get() = com.example.engine.effects.AlightMotionEffectRegistry.effects
+
+    val combinedShaderEffects: List<EffectCatalogItem>
+        get() = shaderEffects + alightMotionEffects + customPackEffects
+
+    val allEffects: List<EffectCatalogItem>
+        get() = listOf(noneItem) + combinedShaderEffects
 
     private val legacyAliases: Map<String, String> = mapOf(
         "tile_2x2" to "tile_grid",
@@ -762,9 +853,10 @@ object EffectCatalog {
     )
 
     fun byCategory(category: EffectCategory): List<EffectCatalogItem> =
-        listOf(noneItem) + shaderEffects.filter { it.category == category }
+        listOf(noneItem) + combinedShaderEffects.filter { it.category == category }
 
     fun findById(id: String): EffectCatalogItem? {
+        com.example.engine.packs.CustomPackRepository.findCatalogItem(id)?.let { return it }
         allEffects.firstOrNull { it.id == id }?.let { return it }
         val mapped = legacyAliases[id] ?: return null
         return allEffects.firstOrNull { it.id == mapped }
@@ -1115,6 +1207,7 @@ data class LayerKeyframe(
     val anchorX: Float = 0.5f,
     val anchorY: Float = 0.5f,
     val effectIntensity: Float = 0f,
+    val opacity: Float = 1f,
     val curve: BezierCurveSpec = BezierCurveSpec(0.25f, 0.1f, 0.25f, 1f)
 )
 
@@ -1182,6 +1275,18 @@ data class LayerSlot(
 )
 
 @Serializable
+enum class AeLayerKind(val defaultTitle: String) {
+    MEDIA("Imagem"),
+    AUDIO("Audio"),
+    SHAPE("Shape"),
+    ELEMENT("Element"),
+    TEXT("Text"),
+    DRAW("Draw"),
+    ADJUSTMENT("Adjustment"),
+    NULL("Null")
+}
+
+@Serializable
 data class EditorLayer(
     val id: String,
     val number: Int,
@@ -1214,10 +1319,44 @@ data class EditorLayer(
     val isFlippedVertical: Boolean = false,
     val layoutEffectName: String = "Layout Effect Not Selected",
     val effectIntensity: Float = 0f,
-    val keyframes: List<LayerKeyframe> = emptyList()
+    val keyframes: List<LayerKeyframe> = emptyList(),
+    val samCutout: SamCutoutSpec = SamCutoutSpec(),
+    val parentLayerId: String? = null,
+    val title: String = "",
+    val layerKind: AeLayerKind = AeLayerKind.MEDIA,
+    val isVisible: Boolean = true,
+    val isLocked: Boolean = false,
+    val startTimeMs: Long = 0L,
+    val durationMs: Long = 3_000L,
+    val zIndex: Int = 0,
+    val sourceSceneId: String? = null,
+    val speedMultiplier: Float = 1f,
+    val blendMode: EffectBlendMode = EffectBlendMode.NORMAL,
+    val borderWidthDp: Float = 0f,
+    val borderColorArgb: Long = 0xFFFFFFFFL,
+    val shadowOpacity: Float = 0f,
+    val shadowRadiusDp: Float = 8f,
+    val shadowOffsetYDp: Float = 4f,
+    val audioVolume: Float = 1f
 ) {
     val effectiveText: String
         get() = textSpec.text.ifBlank { textOverlay }
+
+    val displayTitle: String
+        get() = when {
+            title.isNotBlank() -> title
+            effectiveText.isNotBlank() -> effectiveText
+            mediaClip is MediaClip.Photo -> "Imagem"
+            mediaClip is MediaClip.Video -> "Video"
+            layerKind != AeLayerKind.MEDIA -> layerKind.defaultTitle
+            else -> "Layer $number"
+        }
+
+    val effectiveLayerDurationMs: Long
+        get() = (mediaClip?.effectiveDurationMs ?: durationMs).coerceAtLeast(300L)
+
+    fun isActiveAt(timeMs: Long): Boolean =
+        timeMs >= startTimeMs && timeMs <= (startTimeMs + effectiveLayerDurationMs)
 
     val layerMediaType: LayerMediaType
         get() = when {
@@ -1327,17 +1466,58 @@ data class VideoProject(
     val trimAdjustment: VideoTrimAdjustment? = null,
     val velocityPoints: List<VelocityPoint> = defaultVelocityPoints(),
     val isVelocitySmooth: Boolean = true,
-    val scenes: List<TimelineScene> = emptyList()
+    val scenes: List<TimelineScene> = emptyList(),
+    val studioLayout: StudioLayoutMode = StudioLayoutMode.NOVA,
+    val aeLayers: List<EditorLayer> = emptyList()
 ) {
     val primaryClip: MediaClip?
-        get() = scenes.firstOrNull()?.clip ?: clips.firstOrNull()
+        get() = scenes.firstOrNull()?.clip
+            ?: aeLayers.firstOrNull { it.mediaClip != null }?.mediaClip
+            ?: clips.firstOrNull()
 
     val totalTimelineDurationMs: Long
-        get() = if (scenes.isNotEmpty()) {
+        get() = if (studioLayout == StudioLayoutMode.AFTER_EFFECTS && aeLayers.isNotEmpty()) {
+            aeLayers.maxOf { (it.startTimeMs + it.effectiveLayerDurationMs).coerceAtLeast(500L) }
+                .coerceAtLeast(durationMs)
+        } else if (scenes.isNotEmpty()) {
             scenes.sumOf { it.effectiveDurationMs }.coerceAtLeast(500L)
         } else {
             durationMs.coerceAtLeast(0L)
         }
+
+    fun resolveActiveAeLayer(positionMs: Long, preferredLayerId: String? = null): EditorLayer? {
+        if (aeLayers.isEmpty()) return null
+        preferredLayerId?.let { id ->
+            aeLayers.firstOrNull { it.id == id }?.let { return it }
+        }
+        return aeLayers.firstOrNull { layer ->
+            val end = layer.startTimeMs + layer.effectiveLayerDurationMs
+            positionMs >= layer.startTimeMs && positionMs < end
+        }
+            ?: aeLayers.firstOrNull { it.isActiveAt(positionMs) }
+            ?: aeLayers.minByOrNull { it.startTimeMs }
+            ?: aeLayers.firstOrNull()
+    }
+
+    fun resolveSceneIndexForAeLayer(layer: EditorLayer?): Int? {
+        if (layer == null || scenes.isEmpty()) return null
+        layer.sourceSceneId?.let { srcId ->
+            val byId = scenes.indexOfFirst { it.id == srcId }
+            if (byId >= 0) return byId
+        }
+        val byClipId = layer.mediaClip?.id?.let { cid ->
+            scenes.indexOfFirst { it.clip?.id == cid || it.clipId == cid }
+        }
+        if (byClipId != null && byClipId >= 0) return byClipId
+        val posMid = layer.startTimeMs + (layer.effectiveLayerDurationMs / 2L)
+        var cursor = 0L
+        scenes.forEachIndexed { idx, sc ->
+            val end = cursor + sc.effectiveDurationMs
+            if (posMid >= cursor && posMid < end) return idx
+            cursor = end
+        }
+        return null
+    }
 }
 
 fun defaultLayers(): List<EditorLayer> = (1..5).map { num ->

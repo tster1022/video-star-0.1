@@ -8,6 +8,7 @@ import java.io.File
 
 object JsonProjectStore {
     private const val FILE_NAME = "videostar_projects.json"
+    private val fileLock = Any()
 
     private val json = Json {
         prettyPrint = false
@@ -16,7 +17,7 @@ object JsonProjectStore {
         coerceInputValues = true
     }
 
-    fun loadProjects(context: Context): List<VideoProject> {
+    fun loadProjects(context: Context): List<VideoProject> = synchronized(fileLock) {
         val file = File(context.filesDir, FILE_NAME)
         if (!file.exists() || file.length() == 0L) return emptyList()
         return runCatching {
@@ -25,7 +26,7 @@ object JsonProjectStore {
         }.getOrDefault(emptyList())
     }
 
-    fun saveProjects(context: Context, projects: List<VideoProject>) {
+    fun saveProjects(context: Context, projects: List<VideoProject>) = synchronized(fileLock) {
         runCatching {
             val file = File(context.filesDir, FILE_NAME)
             val tmp = File(context.filesDir, "$FILE_NAME.tmp")

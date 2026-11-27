@@ -11,7 +11,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clipToBounds
@@ -26,10 +29,14 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.unit.dp
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.example.data.SceneBitmapRenderer
+import com.example.engine.render.StudioRenderErrorBoundary
 import com.example.gl.GlLayerRenderStage
 import com.example.gl.GlRenderStage
 import com.example.model.EditorLayer
@@ -55,43 +62,75 @@ fun ProjectSongAudioPlayer(
 ) {
     if (songUriString.isNullOrBlank() || LocalInspectionMode.current) return
     val context = LocalContext.current
+    var hasAudioError by remember(songUriString) { mutableStateOf(false) }
     val audioPlayer = remember(songUriString) {
-        ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(Uri.parse(songUriString)))
-            repeatMode = Player.REPEAT_MODE_ALL
-            prepare()
-        }
+        runCatching {
+            val songAudioAttrs = AudioAttributes.Builder()
+                .setUsage(C.USAGE_MEDIA)
+                .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+                .build()
+            ExoPlayer.Builder(context)
+                .setAudioAttributes(songAudioAttrs, false)
+                .build()
+                .apply {
+                    setMediaItem(MediaItem.fromUri(Uri.parse(songUriString)))
+                    repeatMode = Player.REPEAT_MODE_ALL
+                    prepare()
+                }
+        }.getOrNull()
     }
 
     DisposableEffect(audioPlayer) {
-        onDispose {
-            audioPlayer.release()
-        }
-    }
-
-    LaunchedEffect(songVolume) {
-        audioPlayer.volume = songVolume.coerceIn(0f, 1f)
-    }
-
-    LaunchedEffect(isPlaying) {
-        if (isPlaying) {
-            val dur = audioPlayer.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
-            val target = if (dur > 0L && dur != Long.MAX_VALUE) timelinePositionMs % dur else timelinePositionMs
-            if (abs(audioPlayer.currentPosition - target) > 120L) {
-                audioPlayer.seekTo(target.coerceAtLeast(0L))
+        val player = audioPlayer ?: return@DisposableEffect onDispose {}
+        val listener = object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                hasAudioError = true
             }
-            audioPlayer.playWhenReady = true
-        } else {
-            audioPlayer.playWhenReady = false
+        }
+        player.addListener(listener)
+        onDispose {
+            runCatching {
+                player.removeListener(listener)
+                player.playWhenReady = false
+                player.release()
+            }
         }
     }
 
-    LaunchedEffect(timelinePositionMs, isPlaying) {
-        if (!isPlaying) {
-            val dur = audioPlayer.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
-            val target = if (dur > 0L && dur != Long.MAX_VALUE) timelinePositionMs % dur else timelinePositionMs
-            if (abs(audioPlayer.currentPosition - target) > 120L) {
-                audioPlayer.seekTo(target.coerceAtLeast(0L))
+    LaunchedEffect(audioPlayer, songVolume) {
+        runCatching { audioPlayer?.volume = songVolume.coerceIn(0f, 1f) }
+    }
+
+    LaunchedEffect(audioPlayer, isPlaying, hasAudioError) {
+        val player = audioPlayer ?: return@LaunchedEffect
+        if (hasAudioError) {
+            runCatching { player.playWhenReady = false }
+            return@LaunchedEffect
+        }
+        runCatching {
+            if (isPlaying) {
+                val dur = player.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
+                val target = if (dur > 0L && dur != Long.MAX_VALUE) timelinePositionMs % dur else timelinePositionMs
+                if (abs(player.currentPosition - target) > 120L) {
+                    player.seekTo(target.coerceAtLeast(0L))
+                }
+                player.playWhenReady = true
+            } else {
+                player.playWhenReady = false
+            }
+        }
+    }
+
+    val pausedSongPosMs = if (isPlaying) Long.MIN_VALUE else timelinePositionMs
+    LaunchedEffect(audioPlayer, pausedSongPosMs, hasAudioError) {
+        if (pausedSongPosMs == Long.MIN_VALUE || hasAudioError) return@LaunchedEffect
+        val player = audioPlayer ?: return@LaunchedEffect
+        kotlinx.coroutines.delay(24L)
+        runCatching {
+            val dur = player.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
+            val target = if (dur > 0L && dur != Long.MAX_VALUE) pausedSongPosMs % dur else pausedSongPosMs
+            if (abs(player.currentPosition - target) > 120L) {
+                player.seekTo(target.coerceAtLeast(0L))
             }
         }
     }
@@ -107,6 +146,10 @@ fun SceneRenderStage(
     speedMultiplier: Float = 1f,
     useLiveVideoPlayer: Boolean = true,
     forceGlStage: Boolean = false,
+    samCutout: SamCutoutSpec = SamCutoutSpec(),
+    layerText: String = "",
+    layerTextSpec: TextLayerSpec = TextLayerSpec(),
+    parentLayer: EditorLayer? = null,
     contentDescription: String = "Scene Preview",
     modifier: Modifier = Modifier,
     onVideoPositionChanged: (Long) -> Unit = {},
@@ -136,43 +179,88 @@ fun SceneRenderStage(
     }
 
     val localProgress = (effectiveLocalMs.toFloat() / sceneDur.toFloat()).coerceIn(0f, 1f)
-    val activeTransform = scene.transform.evaluatedAt(localProgress)
-    val curveSpeed = evaluateVelocityAt(localProgress, scene.velocityPoints, scene.isVelocitySmooth) * speedMultiplier
-    val activePasses = remember(scene) { scene.resolvedEffectPasses() }
+    val activeTransform = StudioRenderErrorBoundary.safeEvaluate("scene_transform", scene.transform) {
+        scene.transform.evaluatedAt(localProgress)
+    }
+    val curveSpeed = StudioRenderErrorBoundary.safeEvaluate("scene_velocity", speedMultiplier.coerceIn(0.25f, 3f)) {
+        evaluateVelocityAt(localProgress, scene.velocityPoints, scene.isVelocitySmooth) * speedMultiplier
+    }
+    val activePasses = remember(scene) {
+        StudioRenderErrorBoundary.safeEvaluate("scene_passes", emptyList()) {
+            scene.resolvedEffectPasses()
+        }
+    }
 
     val isHardwareGlSupported = !LocalInspectionMode.current &&
         !Build.FINGERPRINT.contains("robolectric", ignoreCase = true)
-    val canUseGlStage = useLiveVideoPlayer &&
-        isHardwareGlSupported &&
+    val canUseGlStage = isHardwareGlSupported &&
         !scene.isMultiLayerComposite &&
         !scene.isReversed &&
         !scene.timing.freezeFrameEnabled &&
         scene.transitionToNext == null &&
-        (forceGlStage || (scene.clip != null && activePasses.isNotEmpty()))
+        (forceGlStage || (scene.clip != null && (useLiveVideoPlayer || activePasses.isNotEmpty())) || activePasses.isNotEmpty())
 
     if (canUseGlStage) {
+        var isGlFrameRendered by remember(scene.id, scene.clip?.id, scene.mediaUriString) {
+            mutableStateOf(false)
+        }
+        val fallbackColorFilter = remember(activePasses, localProgress, scene.colorGrading) {
+            val gradingMatrix = if (!scene.colorGrading.isNeutral) scene.colorGrading.toColorMatrixArray() else null
+            buildSceneColorFilter(activePasses, localProgress, gradingMatrix)
+        }
         Box(
             modifier = modifier
                 .clipToBounds()
                 .background(Color(activeTransform.bgColorArgb.toInt()))
         ) {
+            if (!isGlFrameRendered) {
+                if (scene.clip == null) {
+                    ProceduralCalibrationGridBox(modifier = Modifier.fillMaxSize())
+                } else {
+                    val fallbackPos = when (val c = scene.clip) {
+                        is MediaClip.Video -> (c.startTrimMs + effectiveLocalMs).coerceIn(c.startTrimMs, c.endTrimMs)
+                        else -> effectiveLocalMs
+                    }
+                    MediaClipStageContent(
+                        clip = scene.clip,
+                        isPlaying = false,
+                        positionMs = fallbackPos,
+                        isMuted = true,
+                        isFitMode = activeTransform.isFitMode,
+                        useLiveVideoPlayer = false,
+                        contentDescription = contentDescription,
+                        colorFilter = fallbackColorFilter,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
             GlRenderStage(
                 scene = scene,
                 localPositionMs = effectiveLocalMs,
                 isPlaying = isPlaying,
                 clipVolume = clipVolume,
                 speedMultiplier = speedMultiplier,
+                enableExoPlayer = useLiveVideoPlayer,
+                samCutout = samCutout,
+                layerText = layerText,
+                layerTextSpec = layerTextSpec,
+                parentLayer = parentLayer,
                 modifier = Modifier.fillMaxSize(),
                 onVideoPositionChanged = onVideoPositionChanged,
-                onScenePlaybackEnded = onScenePlaybackEnded
+                onScenePlaybackEnded = onScenePlaybackEnded,
+                onFirstFrameRendered = { isGlFrameRendered = true }
             )
         }
         return
     }
 
-    // Motion calculations
-    val motionOffsets = SceneBitmapRenderer.computeMotionOffsets(scene, localProgress)
-    val effectMotion = computeEffectMotionOffsets(activePasses, localProgress)
+    // Motion calculations with safe fallback
+    val motionOffsets = StudioRenderErrorBoundary.safeEvaluate("scene_motion", floatArrayOf(0f, 0f, 1f, 0f)) {
+        SceneBitmapRenderer.computeMotionOffsets(scene, localProgress)
+    }
+    val effectMotion = StudioRenderErrorBoundary.safeEvaluate("effect_motion", floatArrayOf(0f, 0f, 1f, 0f)) {
+        computeEffectMotionOffsets(activePasses, localProgress)
+    }
 
     // Outgoing transition blend near end of scene
     val transition = scene.transitionToNext
@@ -391,12 +479,16 @@ private fun MultiLayerCompositeContent(
 
     Box(modifier = modifier) {
         layers.forEach { layer ->
-            val interpolated = interpolateLayerAt(layer, progress)
+            if (!layer.isVisible) return@forEach
+            val interpolated = StudioRenderErrorBoundary.safeEvaluate("layer_interp_${layer.id}", layer) {
+                interpolateLayerAt(layer, progress)
+            }
             if (interpolated.layerMediaType != LayerMediaType.NONE || interpolated.effectiveText.isNotBlank()) {
                 val activeLayerPasses = interpolated.effectPasses.filter { it.isEnabled && it.effectId != "none" }
-                val useLayerGl = activeLayerPasses.isNotEmpty() &&
+                val parentLayer = interpolated.parentLayerId?.let { pid -> layers.firstOrNull { it.id == pid } }
+                val useLayerGl = (activeLayerPasses.isNotEmpty() || interpolated.samCutout.isActive) &&
                     isHardwareGlSupported &&
-                    (interpolated.mediaClip != null || interpolated.backgroundColorArgb != null)
+                    (interpolated.mediaClip != null || interpolated.backgroundColorArgb != null || interpolated.effectiveText.isNotBlank())
 
                 Box(
                     modifier = Modifier
@@ -424,6 +516,7 @@ private fun MultiLayerCompositeContent(
                             progress = progress,
                             isPlaying = isPlaying,
                             isMuted = isMuted,
+                            parentLayer = parentLayer,
                             modifier = Modifier.fillMaxSize()
                         )
                     } else {

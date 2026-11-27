@@ -67,17 +67,23 @@ fun EffectsStudioScreen(
     sceneIndices: List<Int> = listOf(0),
     targetLayerId: String? = null,
     isDarkTheme: Boolean = false,
+    catalogScope: com.example.model.EffectCatalogScope = com.example.model.EffectCatalogScope.ALL,
     onCancel: () -> Unit,
     onCreated: () -> Unit
 ) {
-    val keySuffix = "${projectId}_${sceneIndices.joinToString("_")}_${targetLayerId ?: "scene"}"
+    val keySuffix = "${projectId}_${sceneIndices.joinToString("_")}_${targetLayerId ?: "scene"}_${catalogScope.name}"
     val viewModel: EffectsStudioViewModel = viewModel(
         key = "effects_studio_$keySuffix",
         factory = remember(keySuffix) {
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                    return EffectsStudioViewModel(projectId, sceneIndices, targetLayerId) as T
+                    return EffectsStudioViewModel(
+                        projectId = projectId,
+                        sceneIndices = sceneIndices,
+                        targetLayerId = targetLayerId,
+                        catalogScope = catalogScope
+                    ) as T
                 }
             }
         }
@@ -222,11 +228,15 @@ fun EffectsStudioScreen(
                         onUpdateSearchQuery = viewModel::updateSearchQuery,
                         onIntensityChange = viewModel::updateIntensity,
                         onPassParamChange = viewModel::updatePassParam,
+                        onPassPoint2DChange = viewModel::updatePassPoint2D,
+                        onPassColorChange = viewModel::updatePassColor,
+                        onPassTextChange = viewModel::updatePassText,
                         onBlendModeChange = viewModel::updatePassBlendMode,
                         onOpacityChange = viewModel::updatePassOpacity,
                         onFocusKeyframeProperty = viewModel::focusKeyframeProperty,
                         onTogglePropertyKeyframe = viewModel::togglePropertyKeyframe,
                         onUpdatePropertyEasing = viewModel::updatePropertyKeyframeEasing,
+                        onUpdatePropertyCustomBezier = viewModel::updatePropertyCustomBezier,
                         onJumpPrevKeyframe = viewModel::jumpToPrevKeyframe,
                         onJumpNextKeyframe = viewModel::jumpToNextKeyframe,
                         onClearPropertyKeyframes = viewModel::clearPropertyKeyframes,

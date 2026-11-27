@@ -1,0 +1,627 @@
+﻿=== FILE: checker.frag ===
+#version 100
+
+precision mediump float;
+uniform vec4 color_a;
+uniform vec4 color_b;
+uniform float oneOverCheckSize;
+uniform vec4 offsetScale;
+
+void main() {
+    float f = step(mod(floor((gl_FragCoord.x + offsetScale.x)*oneOverCheckSize*offsetScale.z)+floor((gl_FragCoord.y + offsetScale.y)*oneOverCheckSize*offsetScale.w),2.0),0.5);
+    gl_FragColor = mix(color_a,color_b,f);
+}
+
+
+=== FILE: grad_linear.frag ===
+#version 100
+
+precision mediump float;
+uniform vec4 color_start;
+uniform vec4 color_end;
+uniform vec2 start;
+uniform vec2 end;
+varying vec2 st;
+
+vec2 projectAndClamp(vec2 a, vec2 b) {
+    return clamp(dot(a,b)/dot(b,b),0.0,1.0) * b;
+}
+
+void main() {
+//    vec2 st = gl_FragCoord.xy;
+    vec2 p = projectAndClamp(st-start, end-start)+start;
+    float f = smoothstep(0.0,1.0,distance(p,start)/distance(end,start));
+    gl_FragColor = mix(color_start,color_end,f);
+}
+
+
+=== FILE: grad_radial.frag ===
+#version 100
+
+precision mediump float;
+uniform vec4 color_start;
+uniform vec4 color_end;
+uniform vec2 start;
+uniform vec2 end;
+varying vec2 st;
+
+vec2 projectAndClamp(vec2 a, vec2 b) {
+    return clamp(dot(a,b)/dot(b,b),0.0,1.0) * b;
+}
+
+void main() {
+    float f = smoothstep(0.0,1.0,distance(st,start)/distance(end,start));
+    gl_FragColor = mix(color_start,color_end,f);
+}
+
+
+=== FILE: grad_sweep.frag ===
+#version 100
+
+precision mediump float;
+uniform vec4 color_start;
+uniform vec4 color_end;
+uniform vec2 start;
+uniform vec2 end;
+varying vec2 st;
+
+void main() {
+    vec2 xy = st - start;
+    vec2 zw = end - start;
+    float a = atan(xy.x, xy.y);
+    float b = atan(zw.x, zw.y);
+    float f = mod(((a-b)+6.28),6.28)/6.28;
+    gl_FragColor = mix(color_start,color_end,f);
+}
+
+
+=== FILE: grad_tex2d_linear.frag ===
+#version 100
+
+precision mediump float;
+uniform vec4 color_start;
+uniform vec4 color_end;
+uniform vec2 start;
+uniform vec2 end;
+varying vec2 st;
+uniform sampler2D texture;
+uniform float alpha;
+
+vec2 projectAndClamp(vec2 a, vec2 b) {
+    return clamp(dot(a,b)/dot(b,b),0.0,1.0) * b;
+}
+
+void main() {
+    vec4 dst = texture2D(texture,st);
+    vec2 p = projectAndClamp(st-start, end-start)+start;
+    float f = smoothstep(0.0,1.0,distance(p,start)/distance(end,start));
+    vec4 src = mix(color_start,color_end,f);
+    gl_FragColor = (src*dst.a + dst*(1.0-src.a)*vec4(1.0,1.0,1.0,dst.a)) * alpha;
+}
+
+
+=== FILE: grad_tex2d_radial.frag ===
+#version 100
+
+precision mediump float;
+uniform vec4 color_start;
+uniform vec4 color_end;
+uniform vec2 start;
+uniform vec2 end;
+varying vec2 st;
+
+vec2 projectAndClamp(vec2 a, vec2 b) {
+    return clamp(dot(a,b)/dot(b,b),0.0,1.0) * b;
+}
+
+void main() {
+    vec4 dst = texture2D(texture,st);
+    float f = smoothstep(0.0,1.0,distance(st,start)/distance(end,start));
+    vec4 src = mix(color_start,color_end,f);
+    gl_FragColor = (src*dst.a + dst*(1.0-src.a)*vec4(1.0,1.0,1.0,dst.a)) * alpha;
+}
+
+
+=== FILE: grad_tex2d_sweep.frag ===
+#version 100
+
+precision mediump float;
+uniform vec4 color_start;
+uniform vec4 color_end;
+uniform vec2 start;
+uniform vec2 end;
+varying vec2 st;
+
+void main() {
+    vec4 dst = texture2D(texture,st);
+    vec2 xy = st - start;
+    vec2 zw = end - start;
+    float a = atan(xy.x, xy.y);
+    float b = atan(zw.x, zw.y);
+    float f = mod(((a-b)+6.28),6.28)/6.28;
+    vec4 src = mix(color_start,color_end,f);
+    gl_FragColor = (src*dst.a + dst*(1.0-src.a)*vec4(1.0,1.0,1.0,dst.a)) * alpha;
+}
+
+
+=== FILE: grid.frag ===
+#version 100
+
+precision highp float;
+uniform vec4 color;
+uniform float grid_spacing;
+uniform vec2 grid_offset;
+uniform float pixel_scale;
+uniform float line_width;
+varying vec2 st;
+
+void main() {
+    vec2 uv = abs(fract((st+grid_offset+grid_spacing*0.5+0.5)/grid_spacing)-0.5);
+    float t = min(uv.x,uv.y);
+//    vec2 t = smoothstep(line_width*1.25/grid_spacing,line_width*0.75/grid_spacing,uv);
+//    vec2 t = clamp(vec2(1.,1.) - uv / (line_width/grid_spacing),0.,1.);
+//    vec2 t = clamp(vec2(1.,1.) - (uv-(line_width/grid_spacing)) / (pixel_scale/grid_spacing),0.,1.);
+    float p = clamp(1. - (t-(line_width/grid_spacing)) / (pixel_scale/grid_spacing),0.,1.);
+//    float p = max(t.x,t.y);
+    gl_FragColor = mix(vec4(0.),color,p);// * 0.0001 + vec4(uv,0.5,1.0)* 0.75;
+}
+
+//void main() {
+//    vec2 t = mod(st,grid_spacing) + grid_offset;
+//    float p = max(step(t.x,1.0), step(t.y,1.0));
+//    gl_FragColor = mix(vec4(0.),color,p);
+//}
+
+
+=== FILE: nanovg_base.frag ===
+#version 100
+#define NANOVG_GL2 1
+#define UNIFORMARRAY_SIZE 11
+
+#ifdef GL_ES
+#if defined(GL_FRAGMENT_PRECISION_HIGH) || defined(NANOVG_GL3)
+ precision highp float;
+#else
+ precision mediump float;
+#endif
+#endif
+#ifdef NANOVG_GL3
+#ifdef USE_UNIFORMBUFFER
+	layout(std140) uniform frag {
+		mat3 scissorMat;
+		mat3 paintMat;
+		vec4 innerCol;
+		vec4 outerCol;
+		vec2 scissorExt;
+		vec2 scissorScale;
+		vec2 extent;
+		float radius;
+		float feather;
+		float strokeMult;
+		float strokeThr;
+		int texType;
+		int type;
+	};
+#else // NANOVG_GL3 && !USE_UNIFORMBUF
+	uniform vec4 frag[UNIFORMARRAY_SIZE];
+#endif
+	uniform sampler2D tex;
+	in vec2 ftcoord;
+	in vec2 fpos;
+	out vec4 outColor;
+#else // !NANOVG_
+	uniform vec4 frag[UNIFORMARRAY_SIZE];
+	uniform sampler2D tex;
+	varying vec2 ftcoord;
+	varying vec2 fpos;
+#endif
+#ifndef USE_UNIFORMBUFFER
+	#define scissorMat mat3(frag[0].xyz, frag[1].xyz, frag[2].xyz)
+	#define paintMat mat3(frag[3].xyz, frag[4].xyz, frag[5].xyz)
+	#define innerCol frag[6]
+	#define outerCol frag[7]
+	#define scissorExt frag[8].xy
+	#define scissorScale frag[8].zw
+	#define extent frag[9].xy
+	#define radius frag[9].z
+	#define feather frag[9].w
+	#define strokeMult frag[10].x
+	#define strokeThr frag[10].y
+	#define texType int(frag[10].z)
+	#define type int(frag[10].w)
+#endif
+
+float sdroundrect(vec2 pt, vec2 ext, float rad) {
+	vec2 ext2 = ext - vec2(rad,rad);
+	vec2 d = abs(pt) - ext2;
+	return min(max(d.x,d.y),0.0) + length(max(d,0.0)) - rad;
+}
+
+// Scissoring
+float scissorMask(vec2 p) {
+	vec2 sc = (abs((scissorMat * vec3(p,1.0)).xy) - scissorExt);
+	sc = vec2(0.5,0.5) - sc * scissorScale;
+	return clamp(sc.x,0.0,1.0) * clamp(sc.y,0.0,1.0);
+}
+#ifdef EDGE_AA
+// Stroke - from [0..1] to clipped pyramid, where the slope is 1px.
+float strokeMask() {
+	return min(1.0, (1.0-abs(ftcoord.x*2.0-1.0))*strokeMult) * min(1.0, ftcoord.y);
+}
+#endif
+
+void main(void) {
+   vec4 result;
+	float scissor = scissorMask(fpos);
+#ifdef EDGE_AA
+	float strokeAlpha = strokeMask();
+	if (strokeAlpha < strokeThr) discard;
+#else
+	float strokeAlpha = 1.0;
+#endif
+	if (type == 0) {			// Gradient
+		// Calculate gradient color using box gradient
+		vec2 pt = (paintMat * vec3(fpos,1.0)).xy;
+		float d = clamp((sdroundrect(pt, extent, radius) + feather*0.5) / feather, 0.0, 1.0);
+		vec4 color = mix(innerCol,outerCol,d);
+		// Combine alpha
+		color *= strokeAlpha * scissor;
+		result = color;
+	} else if (type == 1) {		// Image
+		// Calculate color fron texture
+		vec2 pt = (paintMat * vec3(fpos,1.0)).xy / extent;
+#ifdef NANOVG_GL3
+		vec4 color = texture(tex, pt);
+#else
+		vec4 color = texture2D(tex, pt);
+#endif
+		if (texType == 1) color = vec4(color.xyz*color.w,color.w);
+		if (texType == 2) color = vec4(color.x);
+		// Apply color tint and alpha.
+		color *= innerCol;
+		// Combine alpha
+		color *= strokeAlpha * scissor;
+		result = color;
+	} else if (type == 2) {		// Stencil fill
+		result = vec4(1,1,1,1);
+	} else if (type == 3) {		// Textured tris
+#ifdef NANOVG_GL3
+		vec4 color = texture(tex, ftcoord);
+#else
+		vec4 color = texture2D(tex, ftcoord);
+#endif
+		if (texType == 1) color = vec4(color.xyz*color.w,color.w);
+		if (texType == 2) color = vec4(color.x);
+		color *= scissor;
+		result = color * innerCol;
+	}
+#ifdef NANOVG_GL3
+	outColor = result;
+#else
+	gl_FragColor = result;
+#endif
+}
+
+
+=== FILE: nanovg_base.vert ===
+#version 100
+#define NANOVG_GL2 1
+#define UNIFORMARRAY_SIZE 11
+
+uniform vec2 viewSize;
+attribute vec2 vertex;
+attribute vec2 tcoord;
+varying vec2 ftcoord;
+varying vec2 fpos;
+
+void main(void) {
+	ftcoord = tcoord;
+	fpos = vertex;
+	gl_Position = vec4(2.0*vertex.x/viewSize.x - 1.0, 1.0 - 2.0*vertex.y/viewSize.y, 0, 1);
+}
+
+
+
+
+=== FILE: points.frag ===
+#version 100
+
+precision mediump float;
+uniform vec4 color;
+
+void main() {
+//	float v = smoothstep(0.4,0.5,1.0-distance(gl_PointCoord,vec2(0.5,0.5)));
+    float v = (1.0-(distance(gl_PointCoord,vec2(0.5,0.5))*2.0));
+    float s = smoothstep(0.0,0.3,v);
+	gl_FragColor = color * s;
+}
+
+
+=== FILE: points.vert ===
+#version 100
+
+attribute vec4 position;
+attribute float pointSize;
+uniform mat4 transform;
+
+void main() {
+	gl_Position = position * transform;
+	gl_PointSize = pointSize;
+}
+
+
+=== FILE: Ripple.frag ===
+#version 100
+precision mediump float;
+
+uniform float time;
+uniform float amplitude;
+uniform float frequency;
+uniform vec2 center;
+varying vec2 st;
+
+void main() {
+    vec2 p = st - center;
+    float len = length(p);
+    float ripple = sin(len * frequency - time) * amplitude;
+    vec2 uv = st + (p / len) * ripple;
+    gl_FragColor = vec4(uv, 0.5 + 0.5 * ripple, 1.0);
+}
+
+
+=== FILE: solid.frag ===
+#version 100
+
+precision mediump float;
+uniform vec4 color;
+
+void main() {
+	gl_FragColor = color;
+}
+
+
+=== FILE: solid.vert ===
+#version 100
+
+attribute vec4 position;
+uniform mat4 transform;
+
+void main() {
+	gl_Position = position * transform;
+}
+
+
+=== FILE: tex2d.frag ===
+#version 100
+
+precision mediump float;
+uniform sampler2D texture;
+uniform float alpha;
+varying vec2 st;
+
+void main() {
+    gl_FragColor = texture2D(texture,st) * alpha;
+}
+
+
+=== FILE: tex2d.vert ===
+#version 100
+
+attribute vec4 position;
+attribute vec2 texcoord;
+varying vec2 st;
+
+void main() {
+	gl_Position = position;
+	st = texcoord;
+}
+
+
+=== FILE: tex2d_checker_in.frag ===
+#version 100
+
+precision mediump float;
+uniform sampler2D texture;
+uniform float alpha;
+varying vec2 st;
+uniform vec4 color;
+uniform vec4 color_a;
+uniform vec4 color_b;
+uniform float oneOverCheckSize;
+
+void main() {
+    float f = step(mod(floor(gl_FragCoord.x*oneOverCheckSize)+floor(gl_FragCoord.y*oneOverCheckSize),2.0),0.5);
+    vec4 checkColor = mix(color_a,color_b,f);
+    vec4 dst = texture2D(texture,st);
+    vec4 src = color + checkColor*(1.0-color.a);
+    gl_FragColor = (src*dst.a + dst*(1.0-src.a)*vec4(1.0,1.0,1.0,dst.a)) * alpha;
+}
+
+
+=== FILE: tex2d_checker_out.frag ===
+#version 100
+
+precision mediump float;
+uniform sampler2D texture;
+uniform float alpha;
+varying vec2 st;
+uniform vec4 color;
+uniform vec4 color_a;
+uniform vec4 color_b;
+uniform float oneOverCheckSize;
+
+void main() {
+    float f = step(mod(floor(gl_FragCoord.x*oneOverCheckSize)+floor(gl_FragCoord.y*oneOverCheckSize),2.0),0.5);
+    vec4 checkColor = mix(color_a,color_b,f);
+    vec4 dst = texture2D(texture,st);
+    vec4 src = color + checkColor*(1.0-color.a);
+    gl_FragColor = (src*(1.0-dst.a) + vec4(dst.rgb,1.0-dst.a)*(1.0-src.a)*vec4(1.0,1.0,1.0,(1.0-dst.a))) * alpha;
+}
+
+
+=== FILE: tex2d_ext.frag ===
+#version 100
+#extension GL_OES_EGL_image_external : require
+
+precision mediump float;
+uniform samplerExternalOES texture;
+uniform float alpha;
+varying vec2 st;
+
+void main() {
+    gl_FragColor = texture2D(texture,st) * alpha;
+}
+
+
+=== FILE: tex2d_ext.vert ===
+#version 100
+
+attribute vec4 position;
+attribute vec2 texcoord;
+uniform mat4 texTransform;
+varying vec2 st;
+
+void main() {
+	gl_Position = position;
+	st = (vec4(texcoord.xy, 0, 1) * texTransform).xy;
+}
+
+
+=== FILE: tex2d_grad_linear.frag ===
+#version 100
+
+precision mediump float;
+uniform sampler2D texture;
+uniform float alpha;
+varying vec2 st;
+uniform vec4 color_start;
+uniform vec4 color_end;
+uniform vec2 start;
+uniform vec2 end;
+
+vec2 projectAndClamp(vec2 a, vec2 b) {
+    return clamp(dot(a,b)/dot(b,b),0.0,1.0) * b;
+}
+
+void main() {
+    vec4 dst = texture2D(texture,st);
+    vec2 p = projectAndClamp(st-start, end-start)+start;
+    float f = smoothstep(0.0,1.0,distance(p,start)/distance(end,start));
+    vec4 src = mix(color_start,color_end,f);
+
+    gl_FragColor = (src*dst.a + dst*(1.0-src.a)*vec4(1.0,1.0,1.0,dst.a)) * alpha;
+}
+
+
+=== FILE: tex2d_grad_radial.frag ===
+#version 100
+
+precision mediump float;
+uniform sampler2D texture;
+uniform float alpha;
+varying vec2 st;
+uniform vec4 color_start;
+uniform vec4 color_end;
+uniform vec2 start;
+uniform vec2 end;
+
+void main() {
+    vec4 dst = texture2D(texture,st);
+    float f = smoothstep(0.0,1.0,distance(st,start)/distance(end,start));
+    vec4 src = mix(color_start,color_end,f);
+
+    gl_FragColor = (src*dst.a + dst*(1.0-src.a)*vec4(1.0,1.0,1.0,dst.a)) * alpha;
+}
+
+
+=== FILE: tex2d_grad_sweep.frag ===
+#version 100
+
+precision mediump float;
+uniform sampler2D texture;
+uniform float alpha;
+varying vec2 st;
+uniform vec4 color_start;
+uniform vec4 color_end;
+uniform vec2 start;
+uniform vec2 end;
+
+void main() {
+    vec4 dst = texture2D(texture,st);
+    vec2 xy = st - start;
+    vec2 zw = end - start;
+    float a = atan(xy.x, xy.y);
+    float b = atan(zw.x, zw.y);
+    float f = ((a-b)+3.14)/6.28;
+    vec4 src = mix(color_start,color_end,f);
+
+    gl_FragColor = (src*dst.a + dst*(1.0-src.a)*vec4(1.0,1.0,1.0,dst.a)) * alpha;
+}
+
+
+=== FILE: tex2d_invert.frag ===
+#version 100
+
+precision mediump float;
+uniform sampler2D texture;
+varying vec2 st;
+
+void main() {
+    vec4 texColor = texture2D(texture,st);
+    gl_FragColor = vec4(1.0-texColor.r, 1.0-texColor.g, 1.0-texColor.b, 1.0);
+}
+
+
+=== FILE: tex2d_mask.frag ===
+#version 100
+
+precision mediump float;
+uniform sampler2D texture;
+uniform vec4 color;
+varying vec2 st;
+
+void main() {
+    vec4 texColor = texture2D(texture,st);
+    gl_FragColor = color * texColor.a;
+}
+
+
+=== FILE: tex2d_ripple.frag ===
+#version 100
+
+precision mediump float;
+uniform sampler2D texture;
+uniform float alpha;
+varying vec2 st;
+uniform float time;
+uniform float amplitude;
+uniform float frequency;
+uniform vec2 center;
+
+void main() {
+    vec2 p = st - center;
+    float len = length(p);
+    float ripple = sin(len * frequency - time) * amplitude;
+    vec2 uv = st + (p / max(len, 1e-4)) * ripple;
+    vec4 dst = texture2D(texture,uv);
+    gl_FragColor = dst * alpha;
+}
+
+
+
+=== FILE: tex2d_solid.frag ===
+#version 100
+
+precision mediump float;
+uniform sampler2D texture;
+uniform float alpha;
+varying vec2 st;
+uniform vec4 color;
+
+void main() {
+    vec4 dst = texture2D(texture,st);
+    vec4 src = color;
+    gl_FragColor = (src*dst.a + dst*(1.0-src.a)*vec4(1.0,1.0,1.0,dst.a)) * alpha;
+}
+
+

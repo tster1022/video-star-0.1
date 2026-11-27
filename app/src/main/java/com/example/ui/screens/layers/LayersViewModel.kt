@@ -1,10 +1,13 @@
 package com.example.ui.screens.layers
 
+import android.content.Context
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.VideoStarRepository
+import com.example.engine.sam.SamCutoutSegmenter
+import com.example.engine.sam.SamLayerBitmapResolver
 import com.example.model.ClassicLayerTab
 import com.example.model.EditorLayer
 import com.example.model.LayerEffectType
@@ -13,6 +16,8 @@ import com.example.model.LayerMediaType
 import com.example.model.LayerSlot
 import com.example.model.MaskMode
 import com.example.model.MaskShape
+import com.example.model.SamCutoutSpec
+import com.example.model.SamTapPoint
 import com.example.model.TextLayerSpec
 import com.example.model.defaultLayers
 import kotlinx.coroutines.Job
@@ -22,6 +27,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.UUID
 import kotlin.math.abs
 
 sealed interface LayersDialogState {
@@ -46,7 +52,10 @@ data class LayersUiState(
     val stageProgress: Float = 0.15f,
     val hasTouchedStage: Boolean = false,
     val activeDialog: LayersDialogState? = null,
-    val statusMessage: String? = null
+    val statusMessage: String? = null,
+    val isSamProcessing: Boolean = false,
+    val isSamTapMode: Boolean = false,
+    val samTapInclude: Boolean = true
 ) {
     val activeLayer: EditorLayer?
         get() = selectedLayerIndex?.let { layers.getOrNull(it) }
@@ -55,20 +64,63 @@ data class LayersUiState(
         get() = layers.map { it.toLayerSlot() }
 }
 
-class LayersViewModel(private val projectId: String) : ViewModel() {
+class LayersViewModel(
+    private val projectId: String,
+    private val targetSceneIndex: Int? = null
+) : ViewModel() {
 
     private val initialProject = VideoStarRepository.getProjectById(projectId)
+    private val resolvedSceneIndex: Int? = initialProject?.scenes?.let { scenes ->
+        when {
+            targetSceneIndex != null && targetSceneIndex in scenes.indices -> targetSceneIndex
+            scenes.isNotEmpty() -> 0
+            else -> null
+        }
+    }
+
+    private val initialLayers: List<EditorLayer> = run {
+        val scenes = initialProject?.scenes.orEmpty()
+        val scene = resolvedSceneIndex?.let { scenes.getOrNull(it) }
+        when {
+            scene != null && scene.isMultiLayerComposite && scene.layers.isNotEmpty() -> scene.layers
+            scene != null -> {
+                val base = defaultLayers()
+                val first = base.first()
+                val seededFirst = first.copy(
+                    mediaClip = scene.clip,
+                    backgroundColorArgb = if (scene.clip == null) scene.transform.bgColorArgb else null,
+                    offsetX = scene.transform.offsetX,
+                    offsetY = scene.transform.offsetY,
+                    scale = scene.transform.scale,
+                    rotation = scene.transform.rotation,
+                    isMirrored = scene.transform.flipH,
+                    isFlippedVertical = scene.transform.flipV,
+                    effectPasses = scene.resolvedEffectPasses(),
+                    sourceSceneId = scene.id
+                )
+                listOf(seededFirst) + base.drop(1)
+            }
+            else -> initialProject?.layers ?: defaultLayers()
+        }
+    }
+
+    init {
+        if (resolvedSceneIndex != null) {
+            VideoStarRepository.syncProjectLayers(projectId, initialLayers)
+        }
+    }
 
     private val _uiState = MutableStateFlow(
         LayersUiState(
             projectId = projectId,
             projectAspectRatio = initialProject?.aspectRatio?.ratio ?: (9f / 16f),
-            layers = initialProject?.layers ?: defaultLayers()
+            layers = initialLayers
         )
     )
     val uiState: StateFlow<LayersUiState> = _uiState.asStateFlow()
 
     private var playbackJob: Job? = null
+    private var samJob: Job? = null
 
     fun refreshFromRepository() {
         val project = VideoStarRepository.getProjectById(projectId) ?: return
@@ -295,6 +347,111 @@ class LayersViewModel(private val projectId: String) : ViewModel() {
         }
     }
 
+    fun toggleSamTapMode() {
+        _uiState.update { it.copy(isSamTapMode = !it.isSamTapMode) }
+    }
+
+    fun setSamTapInclude(include: Boolean) {
+        _uiState.update { it.copy(samTapInclude = include, isSamTapMode = true) }
+    }
+
+    fun runSamAutoCutout(context: Context) {
+        val targetLayer = _uiState.value.activeLayer ?: return
+        val nextSpec = targetLayer.samCutout.copy(
+            enabled = true,
+            isolateAllSubjects = true,
+            tapPoints = emptyList()
+        )
+        executeSamSegmentation(context, targetLayer, nextSpec)
+    }
+
+    fun addSamTapPoint(context: Context, normX: Float, normY: Float) {
+        val state = _uiState.value
+        val targetLayer = state.activeLayer ?: return
+        val pt = SamTapPoint(
+            id = "sam_${UUID.randomUUID().toString().take(6)}",
+            x = normX.coerceIn(0f, 1f),
+            y = normY.coerceIn(0f, 1f),
+            include = state.samTapInclude
+        )
+        val updatedPoints = targetLayer.samCutout.tapPoints + pt
+        val nextSpec = targetLayer.samCutout.copy(
+            enabled = true,
+            isolateAllSubjects = updatedPoints.none { it.include },
+            tapPoints = updatedPoints
+        )
+        executeSamSegmentation(context, targetLayer, nextSpec)
+    }
+
+    fun updateSamRefinement(context: Context, feather: Float, choke: Float, invert: Boolean) {
+        val targetLayer = _uiState.value.activeLayer ?: return
+        val nextSpec = targetLayer.samCutout.copy(
+            feather = feather.coerceIn(0f, 1f),
+            choke = choke.coerceIn(-1f, 1f),
+            invert = invert
+        )
+        updateSelectedOrFirstLayer { it.copy(samCutout = nextSpec) }
+        if (nextSpec.enabled) {
+            executeSamSegmentation(context, targetLayer.copy(samCutout = nextSpec), nextSpec, silent = true)
+        }
+    }
+
+    fun clearSamCutout() {
+        samJob?.cancel()
+        updateSelectedOrFirstLayer { it.copy(samCutout = SamCutoutSpec()) }
+        _uiState.update {
+            it.copy(
+                isSamProcessing = false,
+                isSamTapMode = false,
+                statusMessage = "SAM cutout cleared"
+            )
+        }
+        syncToRepository()
+    }
+
+    private fun executeSamSegmentation(
+        context: Context,
+        targetLayer: EditorLayer,
+        spec: SamCutoutSpec,
+        silent: Boolean = false
+    ) {
+        samJob?.cancel()
+        samJob = viewModelScope.launch {
+            _uiState.update { it.copy(isSamProcessing = true) }
+            val progress = _uiState.value.stageProgress
+            val srcBmp = SamLayerBitmapResolver.extractLayerSourceBitmap(context, targetLayer, progress)
+            if (srcBmp == null) {
+                _uiState.update {
+                    it.copy(
+                        isSamProcessing = false,
+                        statusMessage = "Add a photo or video to this layer first"
+                    )
+                }
+                return@launch
+            }
+            val outcome = runCatching {
+                SamCutoutSegmenter.runCutout(context, targetLayer.id, srcBmp, spec)
+            }.getOrNull()
+
+            if (outcome != null) {
+                _uiState.update { state ->
+                    state.copy(
+                        isSamProcessing = false,
+                        layers = state.layers.map { l ->
+                            if (l.id == targetLayer.id) l.copy(samCutout = outcome.updatedSpec) else l
+                        },
+                        statusMessage = if (silent) state.statusMessage else "SAM isolated ${outcome.subjectCount} subject(s)"
+                    )
+                }
+                syncToRepository()
+            } else {
+                _uiState.update {
+                    it.copy(isSamProcessing = false, statusMessage = "Subject cutout could not run on this frame")
+                }
+            }
+        }
+    }
+
     fun toggleHorizontalMirror() {
         updateSelectedOrFirstLayer { it.copy(isMirrored = !it.isMirrored) }
     }
@@ -370,7 +527,12 @@ class LayersViewModel(private val projectId: String) : ViewModel() {
     }
 
     fun commitAndCreate(onDone: () -> Unit) {
-        VideoStarRepository.saveProjectLayers(projectId, _uiState.value.layers)
+        VideoStarRepository.saveProjectLayers(
+            projectId = projectId,
+            layers = _uiState.value.layers,
+            targetSceneIndex = resolvedSceneIndex,
+            createNewSceneIfEmpty = resolvedSceneIndex == null
+        )
         onDone()
     }
 
@@ -462,6 +624,7 @@ class LayersViewModel(private val projectId: String) : ViewModel() {
 
     override fun onCleared() {
         playbackJob?.cancel()
+        samJob?.cancel()
         super.onCleared()
     }
 }

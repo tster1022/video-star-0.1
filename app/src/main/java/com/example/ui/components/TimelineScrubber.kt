@@ -75,7 +75,9 @@ fun TimelineScrubber(
     modifier: Modifier = Modifier,
     sceneBoundaryProgresses: List<Float> = emptyList(),
     onThumbBoundsChanged: ((Rect) -> Unit)? = null,
-    onSnapshotClick: (() -> Unit)? = null
+    onSnapshotClick: (() -> Unit)? = null,
+    onBeginScrubbing: () -> Unit = {},
+    onEndScrubbing: () -> Unit = {}
 ) {
     val safeDuration = durationMs.coerceAtLeast(500L)
     val progress = (currentPositionMs.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f)
@@ -192,16 +194,23 @@ fun TimelineScrubber(
                         .height(34.dp)
                         .pointerInput(safeDuration) {
                             detectTapGestures { offset ->
+                                onBeginScrubbing()
                                 val tapped = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
                                 onSeekProgress(tapped)
+                                onEndScrubbing()
                             }
                         }
                         .pointerInput(safeDuration) {
-                            detectHorizontalDragGestures { change, _ ->
-                                change.consume()
-                                val dragged = (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)
-                                onSeekProgress(dragged)
-                            }
+                            detectHorizontalDragGestures(
+                                onDragStart = { onBeginScrubbing() },
+                                onDragEnd = { onEndScrubbing() },
+                                onDragCancel = { onEndScrubbing() },
+                                onHorizontalDrag = { change, _ ->
+                                    change.consume()
+                                    val dragged = (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)
+                                    onSeekProgress(dragged)
+                                }
+                            )
                         }
                         .testTag("timeline_scrubber_track"),
                     contentAlignment = Alignment.CenterStart

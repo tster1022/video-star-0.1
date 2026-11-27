@@ -31,10 +31,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import com.example.ui.components.PrecisionRulerDialSlider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -637,32 +636,24 @@ fun AudioManagerDialog(
 
                 HorizontalDivider(color = VideoStarIosDivider)
 
-                Text(
-                    text = "Clip Audio: ${(audioConfig.clipVolume * 100).toInt()}%",
-                    fontFamily = InterFontFamily,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 13.sp,
-                    color = VideoStarInkDark
-                )
-                Slider(
+                PrecisionRulerDialSlider(
+                    label = "Clip Audio",
+                    valueText = "${(audioConfig.clipVolume * 100).toInt()}%",
                     value = audioConfig.clipVolume,
                     onValueChange = { onUpdateConfig(audioConfig.copy(clipVolume = it)) },
                     valueRange = 0f..1f,
-                    colors = SliderDefaults.colors(thumbColor = ClassicRed, activeTrackColor = ClassicRed)
+                    defaultValue = 1f,
+                    height = 40.dp
                 )
 
-                Text(
-                    text = "Song Volume: ${(audioConfig.songVolume * 100).toInt()}%",
-                    fontFamily = InterFontFamily,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 13.sp,
-                    color = VideoStarInkDark
-                )
-                Slider(
+                PrecisionRulerDialSlider(
+                    label = "Song Vol",
+                    valueText = "${(audioConfig.songVolume * 100).toInt()}%",
                     value = audioConfig.songVolume,
                     onValueChange = { onUpdateConfig(audioConfig.copy(songVolume = it)) },
                     valueRange = 0f..1f,
-                    colors = SliderDefaults.colors(thumbColor = ClassicGreen, activeTrackColor = ClassicGreen)
+                    defaultValue = 0.8f,
+                    height = 40.dp
                 )
 
                 Text("أو اختر إيقاعاً جاهزاً:", fontSize = 12.sp, color = VideoStarInkMuted)
@@ -738,29 +729,21 @@ fun TrimActiveSceneDialog(
         title = { Text("قص المشهد (${scene.title})", color = VideoStarInkDark) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "Start: ${String.format(Locale.US, "%.2fs", startMs / 1000f)}",
-                    fontFamily = InterFontFamily,
-                    fontWeight = FontWeight.SemiBold,
-                    color = ClassicGreen
-                )
-                Slider(
+                PrecisionRulerDialSlider(
+                    label = "Start",
+                    valueText = String.format(Locale.US, "%.2fs", startMs / 1000f),
                     value = startMs,
                     onValueChange = { startMs = it.coerceAtMost(endMs - 250f).coerceAtLeast(0f) },
                     valueRange = 0f..totalDurMs.toFloat(),
-                    colors = SliderDefaults.colors(thumbColor = ClassicGreen, activeTrackColor = ClassicGreen)
+                    height = 40.dp
                 )
-                Text(
-                    text = "End: ${String.format(Locale.US, "%.2fs", endMs / 1000f)}",
-                    fontFamily = InterFontFamily,
-                    fontWeight = FontWeight.SemiBold,
-                    color = ClassicRed
-                )
-                Slider(
+                PrecisionRulerDialSlider(
+                    label = "End",
+                    valueText = String.format(Locale.US, "%.2fs", endMs / 1000f),
                     value = endMs,
                     onValueChange = { endMs = it.coerceAtLeast(startMs + 250f).coerceAtMost(totalDurMs.toFloat()) },
                     valueRange = 250f..totalDurMs.toFloat(),
-                    colors = SliderDefaults.colors(thumbColor = ClassicRed, activeTrackColor = ClassicRed)
+                    height = 40.dp
                 )
             }
         },

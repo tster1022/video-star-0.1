@@ -3,14 +3,18 @@ package com.example.ui.screens.effects
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.VideoStarRepository
+import com.example.engine.packs.CustomPackRepository
 import com.example.model.AspectRatioMode
+import com.example.model.BezierCurveSpec
 import com.example.model.EditorLayer
 import com.example.model.EffectBlendMode
 import com.example.model.EffectCatalog
 import com.example.model.EffectCatalogItem
+import com.example.model.EffectCatalogScope
 import com.example.model.EffectCategory
 import com.example.model.EffectKeyframe
 import com.example.model.EffectParamSpec
+import com.example.model.EffectParamType
 import com.example.model.EffectStudioTab
 import com.example.model.KeyframeEasing
 import com.example.model.MediaClip
@@ -23,12 +27,15 @@ import com.example.model.ShaderEffectPass
 import com.example.model.TimelineScene
 import com.example.model.arabicDisplayLabel
 import com.example.model.arabicDisplayName
+import com.example.model.isCustomPackEffect
 import com.example.model.toStudioTab
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -81,7 +88,9 @@ data class EffectsStudioUiState(
     val isPlaying: Boolean = true,
     val previewLocalMs: Long = 0L,
     val selectedKeyframePropertyKey: String = PARAM_KEY_INTENSITY,
-    val defaultKeyframeEasing: KeyframeEasing = KeyframeEasing.LINEAR
+    val defaultKeyframeEasing: KeyframeEasing = KeyframeEasing.LINEAR,
+    val catalogScope: EffectCatalogScope = EffectCatalogScope.ALL,
+    val customPackVersion: Int = 0
 ) {
     internal fun toHistorySnapshot(
         entryType: HistoryEntryType = HistoryEntryType.EFFECT_STACK_CHANGE,
@@ -135,6 +144,13 @@ data class EffectsStudioUiState(
         activePass?.evaluateParamAt(param.key, previewProgress, param.defaultValue, param.minValue, param.maxValue)
             ?: param.defaultValue
 
+    fun evaluatedColorValue(param: EffectParamSpec): Long =
+        activePass?.evaluateColorAt(param.key, previewProgress, param.defaultColorArgb)
+            ?: param.defaultColorArgb
+
+    fun evaluatedTextValue(param: EffectParamSpec): String =
+        activePass?.textParam(param.key, param.defaultText) ?: param.defaultText
+
     fun keyframesFor(propertyKey: String): List<ParameterKeyframe> =
         activePass?.keyframesForProperty(propertyKey).orEmpty()
 
@@ -144,14 +160,19 @@ data class EffectsStudioUiState(
     fun hasKeyframeNear(propertyKey: String, tolerance: Float = 0.03f): Boolean =
         activePass?.hasKeyframeNear(propertyKey, previewProgress, tolerance) == true
 
-    fun activeEasingFor(propertyKey: String): KeyframeEasing {
+    fun activeKeyframeFor(propertyKey: String): ParameterKeyframe? {
         val kfs = keyframesFor(propertyKey)
-        if (kfs.isEmpty()) return defaultKeyframeEasing
-        val near = kfs.minByOrNull { abs(it.time - previewProgress) }?.takeIf { abs(it.time - previewProgress) <= 0.03f }
-        if (near != null) return near.easing
-        val prev = kfs.lastOrNull { it.time <= previewProgress } ?: kfs.first()
-        return prev.easing
+        if (kfs.isEmpty()) return null
+        return kfs.minByOrNull { abs(it.time - previewProgress) }?.takeIf { abs(it.time - previewProgress) <= 0.03f }
+            ?: kfs.lastOrNull { it.time <= previewProgress }
+            ?: kfs.first()
     }
+
+    fun activeEasingFor(propertyKey: String): KeyframeEasing =
+        activeKeyframeFor(propertyKey)?.easing ?: defaultKeyframeEasing
+
+    fun activeCustomBezierFor(propertyKey: String): BezierCurveSpec? =
+        activeKeyframeFor(propertyKey)?.customBezier
 
     val allActivePassKeyframeTimes: List<Float>
         get() = activePass?.allKeyframeTimes().orEmpty()
@@ -208,13 +229,28 @@ data class EffectsStudioUiState(
             }.sortedWith(compareBy<EffectTimelineKeyframeMarker> { it.time }.thenBy { it.isFocusedProperty })
         }
 
+    val scopedEffects: List<EffectCatalogItem>
+        get() = when (catalogScope) {
+            EffectCatalogScope.ALL -> EffectCatalog.combinedShaderEffects
+            EffectCatalogScope.VIDEO_STAR_ONLY -> EffectCatalog.combinedShaderEffects.filter {
+                !it.category.isAlightMotion || it.isCustomPackEffect()
+            }
+            EffectCatalogScope.AFTER_EFFECTS_ONLY -> EffectCatalog.combinedShaderEffects.filter {
+                it.category.isAlightMotion || it.isCustomPackEffect()
+            }
+        }
+
+    val availableTabs: List<EffectStudioTab>
+        get() = EffectStudioTab.tabsForScope(catalogScope)
+
     val displayedEffects: List<EffectCatalogItem>
         get() {
             val q = searchQuery.trim()
+            val allEffects = scopedEffects
             val base = if (showFavoritesOnly) {
-                EffectCatalog.shaderEffects.filter { it.id in favoriteEffectIds }
+                allEffects.filter { it.id in favoriteEffectIds }
             } else {
-                EffectCatalog.shaderEffects
+                allEffects
             }
             return when {
                 q.isNotEmpty() -> base.filter {
@@ -228,6 +264,11 @@ data class EffectsStudioUiState(
                 else -> base.filter { it.toStudioTab() == selectedTab }
             }
         }
+
+    fun tabCount(tab: EffectStudioTab): Int = when (tab) {
+        EffectStudioTab.ALL -> scopedEffects.size
+        else -> scopedEffects.count { it.toStudioTab() == tab }
+    }
 
     val previewScene: TimelineScene
         get() {
@@ -278,13 +319,16 @@ class EffectsStudioViewModel(
     private val projectId: String,
     sceneIndices: List<Int> = listOf(0),
     private val targetLayerId: String? = null,
+    private val catalogScope: EffectCatalogScope = EffectCatalogScope.ALL,
     private val historyHelper: EffectsStudioHistoryHelper = EffectsStudioHistoryHelper()
 ) : ViewModel() {
 
     private val safeIndices = sceneIndices.ifEmpty { listOf(0) }
     private val project = VideoStarRepository.getProjectById(projectId)
     private val firstScene = project?.scenes?.getOrNull(safeIndices.first())
-    private val layer = targetLayerId?.let { id -> project?.layers?.firstOrNull { it.id == id } }
+    private val layer = targetLayerId?.let { id ->
+        (project?.aeLayers.orEmpty() + project?.layers.orEmpty()).firstOrNull { it.id == id }
+    }
 
     private val initialPasses: List<ShaderEffectPass> = when {
         layer != null -> layer.effectPasses
@@ -308,7 +352,8 @@ class EffectsStudioViewModel(
             selectedPassIndex = 0,
             panelLevel = StudioPanelLevel.STACK,
             selectedTab = EffectStudioTab.ALL,
-            selectedCategory = initialCategory
+            selectedCategory = initialCategory,
+            catalogScope = catalogScope
         )
     )
     val uiState: StateFlow<EffectsStudioUiState> = _uiState.asStateFlow()
@@ -317,6 +362,12 @@ class EffectsStudioViewModel(
 
     init {
         startPreviewLoop()
+        CustomPackRepository.importedShaders
+            .onEach { _uiState.update { s -> s.copy(customPackVersion = s.customPackVersion + 1) } }
+            .launchIn(viewModelScope)
+        CustomPackRepository.importedPresets
+            .onEach { _uiState.update { s -> s.copy(customPackVersion = s.customPackVersion + 1) } }
+            .launchIn(viewModelScope)
     }
 
     private fun startPreviewLoop() {
@@ -411,10 +462,20 @@ class EffectsStudioViewModel(
     fun selectTab(tab: EffectStudioTab) {
         val mappedCat = when (tab) {
             EffectStudioTab.ALL -> _uiState.value.selectedCategory
-            EffectStudioTab.COLOR -> EffectCategory.COLOR_GLOW
-            EffectStudioTab.LAYOUT -> EffectCategory.MIRROR_KALEIDOSCOPE
-            EffectStudioTab.MOTION -> EffectCategory.SHAKE_MOTION
-            EffectStudioTab.VHS_GLITCH -> EffectCategory.RETRO_VHS
+            EffectStudioTab.MY_EFFECTS -> EffectCategory.AM_PROCEDURAL
+            EffectStudioTab.VIDEO_STAR -> {
+                val cur = _uiState.value.selectedCategory
+                if (!cur.isAlightMotion) cur else EffectCategory.SHAKE_MOTION
+            }
+            EffectStudioTab.MOVE_TRANSFORM -> EffectCategory.AM_MOVE_TRANSFORM
+            EffectStudioTab.DISTORTION_WARP -> EffectCategory.AM_DISTORTION_WARP
+            EffectStudioTab.MATTE_MASK_KEY -> EffectCategory.AM_MATTE_MASK_KEY
+            EffectStudioTab.OPACITY_VISIBILITY -> EffectCategory.AM_OPACITY_VISIBILITY
+            EffectStudioTab.PROCEDURAL -> EffectCategory.AM_PROCEDURAL
+            EffectStudioTab.REPEAT -> EffectCategory.AM_REPEAT
+            EffectStudioTab.THREE_D -> EffectCategory.AM_THREE_D
+            EffectStudioTab.TEXT -> EffectCategory.AM_TEXT
+            EffectStudioTab.OTHER -> EffectCategory.AM_OTHER
         }
         _uiState.update {
             it.copy(
@@ -427,10 +488,21 @@ class EffectsStudioViewModel(
 
     fun selectCategory(category: EffectCategory) {
         val mappedTab = when (category) {
-            EffectCategory.COLOR_GLOW -> EffectStudioTab.COLOR
-            EffectCategory.MIRROR_KALEIDOSCOPE -> EffectStudioTab.LAYOUT
-            EffectCategory.SHAKE_MOTION, EffectCategory.BLUR_FOCUS -> EffectStudioTab.MOTION
-            EffectCategory.DISTORTION_GLITCH, EffectCategory.RETRO_VHS -> EffectStudioTab.VHS_GLITCH
+            EffectCategory.SHAKE_MOTION,
+            EffectCategory.BLUR_FOCUS,
+            EffectCategory.COLOR_GLOW,
+            EffectCategory.DISTORTION_GLITCH,
+            EffectCategory.MIRROR_KALEIDOSCOPE,
+            EffectCategory.RETRO_VHS -> EffectStudioTab.VIDEO_STAR
+            EffectCategory.AM_MOVE_TRANSFORM -> EffectStudioTab.MOVE_TRANSFORM
+            EffectCategory.AM_DISTORTION_WARP -> EffectStudioTab.DISTORTION_WARP
+            EffectCategory.AM_MATTE_MASK_KEY -> EffectStudioTab.MATTE_MASK_KEY
+            EffectCategory.AM_OPACITY_VISIBILITY -> EffectStudioTab.OPACITY_VISIBILITY
+            EffectCategory.AM_PROCEDURAL -> EffectStudioTab.PROCEDURAL
+            EffectCategory.AM_REPEAT -> EffectStudioTab.REPEAT
+            EffectCategory.AM_THREE_D -> EffectStudioTab.THREE_D
+            EffectCategory.AM_TEXT -> EffectStudioTab.TEXT
+            EffectCategory.AM_OTHER -> EffectStudioTab.OTHER
         }
         _uiState.update {
             it.copy(
@@ -473,24 +545,33 @@ class EffectsStudioViewModel(
     fun addEffectFromLibrary(item: EffectCatalogItem) {
         if (item.id == "none") return
         pushUndoSnapshot(HistoryEntryType.EFFECT_STACK_CHANGE, "إضافة ${item.arabicDisplayName()}")
-        _uiState.update { state ->
-            val newPass = ShaderEffectPass(
-                id = "pass_${UUID.randomUUID().toString().take(6)}",
-                effectId = item.id,
-                effectName = item.name,
-                category = item.category,
-                intensity = item.defaultIntensity,
-                params = item.defaultParamMap(),
-                keyframes = emptyList(),
-                isEnabled = true,
-                blendMode = EffectBlendMode.NORMAL,
-                passOpacity = 1.0f
+        val expanded = CustomPackRepository.expandEffectPassesForSelection(item.id)
+        val passesToAdd = if (expanded.isNotEmpty()) {
+            expanded
+        } else {
+            listOf(
+                ShaderEffectPass(
+                    id = "pass_${UUID.randomUUID().toString().take(6)}",
+                    effectId = item.id,
+                    effectName = item.name,
+                    category = item.category,
+                    intensity = item.defaultIntensity,
+                    params = item.defaultParamMap(),
+                    colorParams = item.defaultColorMap(),
+                    textParams = item.defaultTextMap(),
+                    keyframes = emptyList(),
+                    isEnabled = true,
+                    blendMode = EffectBlendMode.NORMAL,
+                    passOpacity = 1.0f
+                )
             )
-            val nextList = state.passes + newPass
+        }
+        _uiState.update { state ->
+            val nextList = state.passes + passesToAdd
             state.copy(
                 passes = nextList,
                 selectedPassIndex = nextList.lastIndex,
-                selectedCategory = item.category,
+                selectedCategory = passesToAdd.lastOrNull()?.category ?: item.category,
                 panelLevel = StudioPanelLevel.EDITOR,
                 isSearchVisible = false,
                 searchQuery = ""
@@ -513,6 +594,8 @@ class EffectsStudioViewModel(
                 category = item.category,
                 intensity = item.defaultIntensity,
                 params = item.defaultParamMap(),
+                colorParams = item.defaultColorMap(),
+                textParams = item.defaultTextMap(),
                 keyframes = emptyList(),
                 isEnabled = true,
                 blendMode = EffectBlendMode.NORMAL,
@@ -539,9 +622,9 @@ class EffectsStudioViewModel(
         _uiState.update { state ->
             val candidate = state.displayedEffects.firstOrNull { fx ->
                 state.passes.none { it.effectId == fx.id }
-            } ?: EffectCatalog.shaderEffects.firstOrNull { fx ->
+            } ?: EffectCatalog.combinedShaderEffects.firstOrNull { fx ->
                 state.passes.none { it.effectId == fx.id }
-            } ?: EffectCatalog.shaderEffects.first()
+            } ?: EffectCatalog.combinedShaderEffects.first()
 
             val newPass = ShaderEffectPass(
                 id = "pass_${UUID.randomUUID().toString().take(6)}",
@@ -549,7 +632,9 @@ class EffectsStudioViewModel(
                 effectName = candidate.name,
                 category = candidate.category,
                 intensity = candidate.defaultIntensity,
-                params = candidate.defaultParamMap()
+                params = candidate.defaultParamMap(),
+                colorParams = candidate.defaultColorMap(),
+                textParams = candidate.defaultTextMap()
             )
             val nextList = state.passes + newPass
             state.copy(
@@ -790,6 +875,127 @@ class EffectsStudioViewModel(
         }
     }
 
+    fun updatePassPoint2D(keyX: String, keyY: String, x: Float, y: Float) {
+        val snapshot = _uiState.value
+        val activePass = snapshot.passes.getOrNull(snapshot.selectedPassIndex) ?: return
+        historyHelper.recordCoalescedChange(
+            coalesceKey = "param:${activePass.id}:$keyX:$keyY",
+            snapshotBefore = snapshot.toHistorySnapshot(
+                entryType = HistoryEntryType.PARAMETER_CHANGE,
+                description = "Adjust 2D Position"
+            )
+        )
+        _uiState.update { state ->
+            val idx = state.selectedPassIndex
+            if (idx !in state.passes.indices) return@update state
+            val specX = state.activeCatalogItem.params.firstOrNull { it.key == keyX }
+            val specY = state.activeCatalogItem.params.firstOrNull { it.key == keyY }
+            val cx = if (specX != null) x.coerceIn(specX.minValue, specX.maxValue) else x
+            val cy = if (specY != null) y.coerceIn(specY.minValue, specY.maxValue) else y
+            val p = state.previewProgress
+            val updated = state.passes.mapIndexed { i, pass ->
+                if (i != idx) pass
+                else {
+                    var nextPass = pass.copy(params = pass.params + (keyX to cx) + (keyY to cy))
+                    if (nextPass.hasKeyframesForProperty(keyX)) {
+                        val listX = nextPass.keyframesForProperty(keyX)
+                        val nearX = listX.indexOfFirst { abs(it.time - p) <= 0.03f }
+                        val nextX = if (nearX >= 0) {
+                            listX.mapIndexed { kIdx, kf -> if (kIdx == nearX) kf.copy(value = cx) else kf }
+                        } else {
+                            (listX + ParameterKeyframe("pkf_${UUID.randomUUID().toString().take(6)}", p, cx, state.defaultKeyframeEasing)).sortedBy { it.time }
+                        }
+                        nextPass = applyPropertyKeyframesToPass(nextPass, keyX, nextX)
+                    }
+                    if (nextPass.hasKeyframesForProperty(keyY)) {
+                        val listY = nextPass.keyframesForProperty(keyY)
+                        val nearY = listY.indexOfFirst { abs(it.time - p) <= 0.03f }
+                        val nextY = if (nearY >= 0) {
+                            listY.mapIndexed { kIdx, kf -> if (kIdx == nearY) kf.copy(value = cy) else kf }
+                        } else {
+                            (listY + ParameterKeyframe("pkf_${UUID.randomUUID().toString().take(6)}", p, cy, state.defaultKeyframeEasing)).sortedBy { it.time }
+                        }
+                        nextPass = applyPropertyKeyframesToPass(nextPass, keyY, nextY)
+                    }
+                    nextPass
+                }
+            }
+            state.copy(
+                passes = updated,
+                selectedKeyframePropertyKey = keyX
+            ).withHistoryFlags()
+        }
+    }
+
+    fun updatePassColor(key: String, argb: Long) {
+        val snapshot = _uiState.value
+        val activePass = snapshot.passes.getOrNull(snapshot.selectedPassIndex) ?: return
+        val paramLabel = snapshot.activeCatalogItem.params.firstOrNull { it.key == key }?.arabicDisplayLabel() ?: key
+        historyHelper.recordCoalescedChange(
+            coalesceKey = "color:${activePass.id}:$key",
+            snapshotBefore = snapshot.toHistorySnapshot(
+                entryType = HistoryEntryType.PARAMETER_CHANGE,
+                description = "تعديل $paramLabel"
+            )
+        )
+        _uiState.update { state ->
+            val idx = state.selectedPassIndex
+            if (idx !in state.passes.indices) return@update state
+            val p = state.previewProgress
+            val updated = state.passes.mapIndexed { i, pass ->
+                if (i != idx) pass
+                else {
+                    val hasKfs = pass.hasKeyframesForProperty(key)
+                    if (!hasKfs) {
+                        pass.copy(colorParams = pass.colorParams + (key to argb))
+                    } else {
+                        val existingList = pass.keyframesForProperty(key)
+                        val nearIdx = existingList.indexOfFirst { abs(it.time - p) <= 0.03f }
+                        val nextList = if (nearIdx >= 0) {
+                            existingList.mapIndexed { kIdx, kf ->
+                                if (kIdx == nearIdx) kf.copy(colorArgb = argb) else kf
+                            }
+                        } else {
+                            (existingList + ParameterKeyframe(
+                                id = "ckf_${UUID.randomUUID().toString().take(6)}",
+                                time = p,
+                                value = 1f,
+                                easing = state.defaultKeyframeEasing,
+                                colorArgb = argb
+                            )).sortedBy { it.time }
+                        }
+                        applyPropertyKeyframesToPass(pass, key, nextList)
+                            .copy(colorParams = pass.colorParams + (key to argb))
+                    }
+                }
+            }
+            state.copy(
+                passes = updated,
+                selectedKeyframePropertyKey = key
+            ).withHistoryFlags()
+        }
+    }
+
+    fun updatePassText(key: String, value: String) {
+        val snapshot = _uiState.value
+        val activePass = snapshot.passes.getOrNull(snapshot.selectedPassIndex) ?: return
+        historyHelper.recordCoalescedChange(
+            coalesceKey = "text:${activePass.id}:$key",
+            snapshotBefore = snapshot.toHistorySnapshot(
+                entryType = HistoryEntryType.PARAMETER_CHANGE,
+                description = "تعديل النص"
+            )
+        )
+        _uiState.update { state ->
+            val idx = state.selectedPassIndex
+            if (idx !in state.passes.indices) return@update state
+            val updated = state.passes.mapIndexed { i, pass ->
+                if (i == idx) pass.copy(textParams = pass.textParams + (key to value)) else pass
+            }
+            state.copy(passes = updated).withHistoryFlags()
+        }
+    }
+
     fun updatePassBlendMode(blendMode: EffectBlendMode) {
         if (_uiState.value.activePass == null) return
         pushUndoSnapshot(HistoryEntryType.PARAMETER_CHANGE, "تغيير وضع المزج")
@@ -860,6 +1066,8 @@ class EffectsStudioViewModel(
                 else pass.copy(
                     intensity = catalogItem.defaultIntensity,
                     params = catalogItem.defaultParamMap(),
+                    colorParams = catalogItem.defaultColorMap(),
+                    textParams = catalogItem.defaultTextMap(),
                     blendMode = EffectBlendMode.NORMAL,
                     passOpacity = 1.0f,
                     keyframes = emptyList(),
@@ -890,14 +1098,27 @@ class EffectsStudioViewModel(
                     val nextList = if (existing != null) {
                         list.filterNot { it.id == existing.id }
                     } else {
-                        val currentVal = evaluatePropertyValue(pass, propertyKey, progress, catalogItem)
-                        val prefix = if (propertyKey == PARAM_KEY_INTENSITY) "ekf" else "pkf"
-                        (list + ParameterKeyframe(
-                            id = "${prefix}_${UUID.randomUUID().toString().take(6)}",
-                            time = progress,
-                            value = currentVal,
-                            easing = state.defaultKeyframeEasing
-                        )).sortedBy { it.time }
+                        val spec = catalogItem.params.firstOrNull { it.key == propertyKey }
+                        val newKf = if (spec?.paramType == EffectParamType.COLOR) {
+                            val currentArgb = pass.evaluateColorAt(propertyKey, progress, spec.defaultColorArgb)
+                            ParameterKeyframe(
+                                id = "ckf_${UUID.randomUUID().toString().take(6)}",
+                                time = progress,
+                                value = 1f,
+                                easing = state.defaultKeyframeEasing,
+                                colorArgb = currentArgb
+                            )
+                        } else {
+                            val currentVal = evaluatePropertyValue(pass, propertyKey, progress, catalogItem)
+                            val prefix = if (propertyKey == PARAM_KEY_INTENSITY) "ekf" else "pkf"
+                            ParameterKeyframe(
+                                id = "${prefix}_${UUID.randomUUID().toString().take(6)}",
+                                time = progress,
+                                value = currentVal,
+                                easing = state.defaultKeyframeEasing
+                            )
+                        }
+                        (list + newKf).sortedBy { it.time }
                     }
                     applyPropertyKeyframesToPass(pass, propertyKey, nextList)
                 }
@@ -931,7 +1152,14 @@ class EffectsStudioViewModel(
                             ?: list.lastOrNull { it.time <= progress }
                             ?: list.first()
                         val nextList = list.map { kf ->
-                            if (kf.id == target.id) kf.copy(easing = easing) else kf
+                            if (kf.id == target.id) {
+                                kf.copy(
+                                    easing = easing,
+                                    customBezier = if (easing == KeyframeEasing.CUBIC_BEZIER) {
+                                        kf.customBezier ?: easing.toBezierCurveSpec()
+                                    } else kf.customBezier
+                                )
+                            } else kf
                         }
                         applyPropertyKeyframesToPass(pass, propertyKey, nextList)
                     }
@@ -941,6 +1169,45 @@ class EffectsStudioViewModel(
                 passes = updated,
                 selectedKeyframePropertyKey = propertyKey,
                 defaultKeyframeEasing = easing
+            ).withHistoryFlags()
+        }
+    }
+
+    fun updatePropertyCustomBezier(propertyKey: String, curveSpec: BezierCurveSpec) {
+        val activePass = _uiState.value.activePass ?: return
+        historyHelper.recordCoalescedChange(
+            coalesceKey = "bezier:${activePass.id}:$propertyKey",
+            snapshotBefore = _uiState.value.toHistorySnapshot(
+                entryType = HistoryEntryType.KEYFRAME_CHANGE,
+                description = "تعديل منحنى بيزيه"
+            )
+        )
+        _uiState.update { state ->
+            val idx = state.selectedPassIndex
+            if (idx !in state.passes.indices) return@update state
+            val progress = state.previewProgress
+            val updated = state.passes.mapIndexed { i, pass ->
+                if (i != idx) pass
+                else {
+                    val list = pass.keyframesForProperty(propertyKey)
+                    if (list.isEmpty()) pass
+                    else {
+                        val target = list.minByOrNull { abs(it.time - progress) }?.takeIf { abs(it.time - progress) <= 0.03f }
+                            ?: list.lastOrNull { it.time <= progress }
+                            ?: list.first()
+                        val nextList = list.map { kf ->
+                            if (kf.id == target.id) {
+                                kf.copy(easing = KeyframeEasing.CUBIC_BEZIER, customBezier = curveSpec)
+                            } else kf
+                        }
+                        applyPropertyKeyframesToPass(pass, propertyKey, nextList)
+                    }
+                }
+            }
+            state.copy(
+                passes = updated,
+                selectedKeyframePropertyKey = propertyKey,
+                defaultKeyframeEasing = KeyframeEasing.CUBIC_BEZIER
             ).withHistoryFlags()
         }
     }

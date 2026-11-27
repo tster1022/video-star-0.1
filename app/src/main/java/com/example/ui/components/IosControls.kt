@@ -28,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -81,6 +82,8 @@ fun IosThinSlider(
     val fraction = ((value - valueRange.start) / span).coerceIn(0f, 1f)
     val latestOnChange by rememberUpdatedState(onValueChange)
     val latestRange by rememberUpdatedState(valueRange)
+    val haptics = rememberStudioTickHaptics()
+    var lastHapticBucket by remember { mutableIntStateOf((fraction * 40f).roundToInt()) }
     val density = LocalDensity.current
 
     BoxWithConstraints(
@@ -102,14 +105,24 @@ fun IosThinSlider(
                     detectTapGestures { offset ->
                         val f = ((offset.x - thumbPx * 0.5f) / usablePx).coerceIn(0f, 1f)
                         val r = latestRange
+                        haptics.tick()
                         latestOnChange(r.start + f * (r.endInclusive - r.start))
                     }
                 }
                 .pointerInput(enabled, usablePx, thumbPx) {
                     if (!enabled) return@pointerInput
-                    detectHorizontalDragGestures { change, _ ->
+                    detectHorizontalDragGestures(
+                        onDragStart = {
+                            lastHapticBucket = (fraction * 40f).roundToInt()
+                        }
+                    ) { change, _ ->
                         change.consume()
                         val f = ((change.position.x - thumbPx * 0.5f) / usablePx).coerceIn(0f, 1f)
+                        val bucket = (f * 40f).roundToInt()
+                        if (bucket != lastHapticBucket) {
+                            lastHapticBucket = bucket
+                            haptics.tick()
+                        }
                         val r = latestRange
                         latestOnChange(r.start + f * (r.endInclusive - r.start))
                     }
@@ -164,7 +177,9 @@ fun RulerJogWheel(
 ) {
     val latestAngle by rememberUpdatedState(angleDegrees)
     val latestOnAngleChange by rememberUpdatedState(onAngleChange)
+    val haptics = rememberStudioTickHaptics()
     var accumulatedAngle by remember { mutableFloatStateOf(angleDegrees) }
+    var lastSnappedAngle by remember { mutableFloatStateOf(angleDegrees) }
 
     Box(
         modifier = modifier
@@ -178,6 +193,7 @@ fun RulerJogWheel(
                 detectHorizontalDragGestures(
                     onDragStart = {
                         accumulatedAngle = latestAngle
+                        lastSnappedAngle = latestAngle
                     },
                     onDragEnd = {},
                     onHorizontalDrag = { change, dragAmount ->
@@ -185,10 +201,14 @@ fun RulerJogWheel(
                         // ~0.22° per px -> smooth tactile 0.5° precision
                         accumulatedAngle = (accumulatedAngle + dragAmount * 0.22f)
                             .coerceIn(valueRange.start, valueRange.endInclusive)
-                        val snapped = if (stepDegrees > 0f) {
+                        val snapped = (if (stepDegrees > 0f) {
                             (accumulatedAngle / stepDegrees).roundToInt() * stepDegrees
-                        } else accumulatedAngle
-                        latestOnAngleChange(snapped.coerceIn(valueRange.start, valueRange.endInclusive))
+                        } else accumulatedAngle).coerceIn(valueRange.start, valueRange.endInclusive)
+                        if (kotlin.math.abs(snapped - lastSnappedAngle) >= (stepDegrees * 0.9f).coerceAtLeast(0.4f)) {
+                            lastSnappedAngle = snapped
+                            haptics.tick()
+                        }
+                        latestOnAngleChange(snapped)
                     }
                 )
             }

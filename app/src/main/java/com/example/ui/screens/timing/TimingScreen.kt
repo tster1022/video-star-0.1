@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -21,12 +22,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import com.example.ui.components.PrecisionRulerDialSlider
+import com.example.ui.components.PrecisionSegmentedOptionRow
+import com.example.ui.components.rememberStudioTickHaptics
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
@@ -84,6 +86,7 @@ fun TimingScreen(
 
     Scaffold(
         containerColor = Color.Transparent,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             Surface(color = VideoStarLightToolbar, shadowElevation = 1.dp) {
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
@@ -214,82 +217,38 @@ fun TimingScreen(
                             .padding(14.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Scene Duration",
-                                color = AdjustVideoTitleDark,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = String.format(Locale.US, "%.2fs", uiState.durationMs / 1000f),
-                                color = ClassicGreen,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.testTag("timing_duration_value")
-                            )
-                        }
+                        Text(
+                            text = "Scene Duration",
+                            color = AdjustVideoTitleDark,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
 
-                        Slider(
+                        PrecisionRulerDialSlider(
+                            label = "Duration (s)",
+                            valueText = String.format(Locale.US, "%.2fs", uiState.durationMs / 1000f),
                             value = (uiState.durationMs / 1000f).coerceIn(0.2f, 30.0f),
                             onValueChange = viewModel::setDurationSeconds,
                             valueRange = 0.2f..30.0f,
-                            colors = SliderDefaults.colors(
-                                thumbColor = ClassicGreen,
-                                activeTrackColor = ClassicGreen,
-                                inactiveTrackColor = Color(0xFFDADAE0)
-                            ),
-                            modifier = Modifier.fillMaxWidth().testTag("timing_duration_slider")
+                            sliderTestTag = "timing_duration_slider"
                         )
 
                         HorizontalDivider(thickness = 0.6.dp, color = VideoStarIosDivider)
 
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Repeat / Loop",
-                                color = AdjustVideoTitleDark,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                listOf(1, 2, 3).forEach { count ->
-                                    val selected = uiState.repeatCount == count
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = if (selected) ClassicGreen else Color(0xFFF0F0F5),
-                                        modifier = Modifier
-                                            .height(40.dp)
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .clickable { viewModel.setRepeatCount(count) }
-                                            .testTag("timing_repeat_${count}x")
-                                    ) {
-                                        Box(
-                                            modifier = Modifier.padding(horizontal = 14.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(
-                                                text = "${count}x",
-                                                color = if (selected) VideoStarWhite else VideoStarInkDark,
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 13.sp
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        PrecisionSegmentedOptionRow(
+                            label = "Repeat",
+                            options = listOf(1, 2, 3),
+                            selectedOption = uiState.repeatCount,
+                            optionLabel = { "${it}x" },
+                            onSelectOption = viewModel::setRepeatCount,
+                            labelColor = AdjustVideoTitleDark,
+                            optionTestTag = { _, count -> "timing_repeat_${count}x" }
+                        )
                     }
                 }
 
                 // Freeze Frame Card
+                val freezeHaptics = rememberStudioTickHaptics()
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = VideoStarWhite,
@@ -323,39 +282,33 @@ fun TimingScreen(
                             }
                             Switch(
                                 checked = uiState.freezeFrameEnabled,
-                                onCheckedChange = viewModel::setFreezeEnabled,
+                                onCheckedChange = { enabled ->
+                                    freezeHaptics.pulseSelection()
+                                    viewModel.setFreezeEnabled(enabled)
+                                },
                                 colors = SwitchDefaults.colors(checkedThumbColor = VideoStarWhite, checkedTrackColor = ClassicGreen),
                                 modifier = Modifier.testTag("timing_freeze_switch")
                             )
                         }
 
                         if (uiState.freezeFrameEnabled) {
-                            Text(
-                                text = "Freeze Position: ${(uiState.freezeAtProgress * 100).toInt()}%",
-                                color = AdjustVideoTitleDark,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Slider(
+                            PrecisionRulerDialSlider(
+                                label = "Freeze Pos",
+                                valueText = "${(uiState.freezeAtProgress * 100).toInt()}%",
                                 value = uiState.freezeAtProgress,
                                 onValueChange = viewModel::setFreezeAtProgress,
                                 valueRange = 0f..1f,
-                                colors = SliderDefaults.colors(thumbColor = ClassicRed, activeTrackColor = ClassicRed),
-                                modifier = Modifier.fillMaxWidth()
+                                defaultValue = 0.5f
                             )
 
-                            Text(
-                                text = String.format(Locale.US, "Freeze Duration: +%.2fs", uiState.freezeDurationMs / 1000f),
-                                color = AdjustVideoTitleDark,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Slider(
+                            PrecisionRulerDialSlider(
+                                label = "Freeze Dur",
+                                valueText = String.format(Locale.US, "+%.2fs", uiState.freezeDurationMs / 1000f),
                                 value = (uiState.freezeDurationMs / 1000f).coerceIn(0.2f, 5.0f),
                                 onValueChange = viewModel::setFreezeDurationSeconds,
                                 valueRange = 0.2f..5.0f,
-                                colors = SliderDefaults.colors(thumbColor = ClassicGreen, activeTrackColor = ClassicGreen),
-                                modifier = Modifier.fillMaxWidth().testTag("timing_freeze_duration_slider")
+                                defaultValue = 1.0f,
+                                sliderTestTag = "timing_freeze_duration_slider"
                             )
                         }
                     }
